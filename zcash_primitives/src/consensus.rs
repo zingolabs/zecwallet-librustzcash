@@ -335,7 +335,7 @@ const UPGRADES_IN_ORDER: &[NetworkUpgrade] = &[
     NetworkUpgrade::Canopy,
 ];
 
-pub const ZIP212_GRACE_PERIOD: u32 = 32256 + 161280;
+pub const ZIP212_GRACE_PERIOD: u32 = 225792;
 
 /// A globally-unique identifier for a set of consensus rules within the Zcash chain.
 ///
