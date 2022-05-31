@@ -465,7 +465,7 @@ impl<'a, P: consensus::Parameters, R: RngCore> Builder<'a, P, R> {
             .activation_height(NetworkUpgrade::Canopy)
             .unwrap()
             .into();
-        let fee = if height >= BlockHeight::from(ZIP313_GRACE_PERIOD_BLOCKS + canopy_height) {
+        let fee = if height >= BlockHeight::from((ZIP313_GRACE_PERIOD_BLOCKS + canopy_height) as u32) {
             Amount::from_u64(1000).unwrap()
         } else {
             Amount::from_u64(10000).unwrap()
