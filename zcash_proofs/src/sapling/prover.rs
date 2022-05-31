@@ -26,6 +26,12 @@ pub struct SaplingProvingContext {
     cv_sum: jubjub::ExtendedPoint,
 }
 
+impl Default for SaplingProvingContext {
+    fn default() -> Self {
+        SaplingProvingContext::new()
+    }
+}
+
 impl SaplingProvingContext {
     /// Construct a new context to be used with a single transaction.
     pub fn new() -> Self {
@@ -38,6 +44,7 @@ impl SaplingProvingContext {
     /// Create the value commitment, re-randomized key, and proof for a Sapling
     /// SpendDescription, while accumulating its value commitment randomness
     /// inside the context for later use.
+    #[allow(clippy::too_many_arguments)]
     pub fn spend_proof(
         &mut self,
         proof_generation_key: ProofGenerationKey,
@@ -85,7 +92,7 @@ impl SaplingProvingContext {
         let note = Note {
             value,
             g_d: diversifier.g_d().expect("was a valid diversifier before"),
-            pk_d: payment_address.pk_d().clone(),
+            pk_d: *payment_address.pk_d(),
             rseed,
         };
 
@@ -129,7 +136,7 @@ impl SaplingProvingContext {
 
         // Add the nullifier through multiscalar packing
         {
-            let nullifier = multipack::bytes_to_bits_le(&nullifier);
+            let nullifier = multipack::bytes_to_bits_le(&nullifier.0);
             let nullifier = multipack::compute_multipacking(&nullifier);
 
             assert_eq!(nullifier.len(), 2);
@@ -187,7 +194,7 @@ impl SaplingProvingContext {
         // We now have a full witness for the output proof.
         let instance = Output {
             value_commitment: Some(value_commitment.clone()),
-            payment_address: Some(payment_address.clone()),
+            payment_address: Some(payment_address),
             commitment_randomness: Some(rcm),
             esk: Some(esk),
         };

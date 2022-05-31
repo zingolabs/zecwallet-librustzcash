@@ -2,7 +2,9 @@
 
 use ff::PrimeField;
 use group::{Curve, Group, GroupEncoding};
+use std::array::TryFromSliceError;
 use std::convert::TryInto;
+use subtle::{Choice, ConstantTimeEq};
 
 use crate::constants;
 
@@ -40,13 +42,13 @@ pub struct ProofGenerationKey {
 impl ProofGenerationKey {
     pub fn to_viewing_key(&self) -> ViewingKey {
         ViewingKey {
-            ak: self.ak.clone(),
+            ak: self.ak,
             nk: constants::PROOF_GENERATION_KEY_GENERATOR * self.nsk,
         }
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ViewingKey {
     pub ak: jubjub::SubgroupPoint,
     pub nk: jubjub::SubgroupPoint,
@@ -57,7 +59,7 @@ impl ViewingKey {
         self.ak + constants::SPENDING_KEY_GENERATOR * ar
     }
 
-    pub fn ivk(&self) -> jubjub::Fr {
+    pub fn ivk(&self) -> SaplingIvk {
         let mut h = [0; 32];
         h.copy_from_slice(
             Blake2sParams::new()
@@ -73,15 +75,27 @@ impl ViewingKey {
         // Drop the most significant five bits, so it can be interpreted as a scalar.
         h[31] &= 0b0000_0111;
 
-        jubjub::Fr::from_repr(h).expect("should be a valid scalar")
+        SaplingIvk(jubjub::Fr::from_repr(h).expect("should be a valid scalar"))
     }
 
     pub fn to_payment_address(&self, diversifier: Diversifier) -> Option<PaymentAddress> {
+        self.ivk().to_payment_address(diversifier)
+    }
+}
+
+pub struct SaplingIvk(pub jubjub::Fr);
+
+impl SaplingIvk {
+    pub fn to_payment_address(&self, diversifier: Diversifier) -> Option<PaymentAddress> {
         diversifier.g_d().and_then(|g_d| {
-            let pk_d = g_d * self.ivk();
+            let pk_d = g_d * self.0;
 
             PaymentAddress::from_parts(diversifier, pk_d)
         })
+    }
+
+    pub fn to_repr(&self) -> [u8; 32] {
+        self.0.to_repr()
     }
 }
 
@@ -143,9 +157,7 @@ impl PaymentAddress {
             Diversifier(tmp)
         };
         // Check that the diversifier is valid
-        if diversifier.g_d().is_none() {
-            return None;
-        }
+        diversifier.g_d()?;
 
         let pk_d = jubjub::SubgroupPoint::from_bytes(bytes[11..43].try_into().unwrap());
         if pk_d.is_some().into() {
@@ -182,7 +194,7 @@ impl PaymentAddress {
             value,
             rseed: randomness,
             g_d,
-            pk_d: self.pk_d.clone(),
+            pk_d: self.pk_d,
         })
     }
 }
@@ -196,6 +208,26 @@ impl PaymentAddress {
 pub enum Rseed {
     BeforeZip212(jubjub::Fr),
     AfterZip212([u8; 32]),
+}
+
+/// Typesafe wrapper for nullifier values.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Nullifier(pub [u8; 32]);
+
+impl Nullifier {
+    pub fn from_slice(bytes: &[u8]) -> Result<Nullifier, TryFromSliceError> {
+        bytes.try_into().map(Nullifier)
+    }
+
+    pub fn to_vec(&self) -> Vec<u8> {
+        self.0.to_vec()
+    }
+}
+
+impl ConstantTimeEq for Nullifier {
+    fn ct_eq(&self, other: &Self) -> Choice {
+        self.0.ct_eq(&other.0)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -258,21 +290,23 @@ impl Note {
 
     /// Computes the nullifier given the viewing key and
     /// note position
-    pub fn nf(&self, viewing_key: &ViewingKey, position: u64) -> Vec<u8> {
+    pub fn nf(&self, viewing_key: &ViewingKey, position: u64) -> Nullifier {
         // Compute rho = cm + position.G
         let rho = self.cm_full_point()
             + (constants::NULLIFIER_POSITION_GENERATOR * jubjub::Fr::from(position));
 
         // Compute nf = BLAKE2s(nk | rho)
-        Blake2sParams::new()
-            .hash_length(32)
-            .personal(constants::PRF_NF_PERSONALIZATION)
-            .to_state()
-            .update(&viewing_key.nk.to_bytes())
-            .update(&rho.to_bytes())
-            .finalize()
-            .as_bytes()
-            .to_vec()
+        Nullifier::from_slice(
+            Blake2sParams::new()
+                .hash_length(32)
+                .personal(constants::PRF_NF_PERSONALIZATION)
+                .to_state()
+                .update(&viewing_key.nk.to_bytes())
+                .update(&rho.to_bytes())
+                .finalize()
+                .as_bytes(),
+        )
+        .unwrap()
     }
 
     /// Computes the note commitment
@@ -294,6 +328,10 @@ impl Note {
     }
 
     pub fn generate_or_derive_esk<R: RngCore + CryptoRng>(&self, rng: &mut R) -> jubjub::Fr {
+        self.generate_or_derive_esk_internal(rng)
+    }
+
+    pub(crate) fn generate_or_derive_esk_internal<R: RngCore>(&self, rng: &mut R) -> jubjub::Fr {
         match self.derive_esk() {
             None => {
                 // create random 64 byte buffer

@@ -45,9 +45,23 @@ impl From<u32> for BlockHeight {
     }
 }
 
-impl From<u64> for BlockHeight {
-    fn from(value: u64) -> Self {
-        BlockHeight(value as u32)
+impl From<BlockHeight> for u32 {
+    fn from(value: BlockHeight) -> u32 {
+        value.0
+    }
+}
+
+impl TryFrom<u64> for BlockHeight {
+    type Error = std::num::TryFromIntError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        u32::try_from(value).map(BlockHeight)
+    }
+}
+
+impl From<BlockHeight> for u64 {
+    fn from(value: BlockHeight) -> u64 {
+        value.0 as u64
     }
 }
 
@@ -64,18 +78,6 @@ impl TryFrom<i64> for BlockHeight {
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
         u32::try_from(value).map(BlockHeight)
-    }
-}
-
-impl From<BlockHeight> for u32 {
-    fn from(value: BlockHeight) -> u32 {
-        value.0
-    }
-}
-
-impl From<BlockHeight> for u64 {
-    fn from(value: BlockHeight) -> u64 {
-        value.0 as u64
     }
 }
 
@@ -127,27 +129,56 @@ pub trait Parameters: Clone {
     /// if an activation height has been set.
     fn activation_height(&self, nu: NetworkUpgrade) -> Option<BlockHeight>;
 
-    /// Returns the human-readable prefix for Sapling extended full
-    /// viewing keys for the network to which this Parameters value applies.
-    fn hrp_sapling_extended_full_viewing_key(&self) -> &str;
-
-    /// Returns the human-readable prefix for Sapling payment addresses
-    /// viewing keys for the network to which this Parameters value applies.
-    fn hrp_sapling_payment_address(&self) -> &str;
-
-    /// Returns the human-readable prefix for transparent pay-to-public-key-hash
-    /// payment addresses for the network to which this Parameters value applies.
-    fn b58_pubkey_address_prefix(&self) -> [u8; 2];
-
-    /// Returns the human-readable prefix for transparent pay-to-script-hash
-    /// payment addresses for the network to which this Parameters value applies.
-    fn b58_script_address_prefix(&self) -> [u8; 2];
-
     /// Determines whether the specified network upgrade is active as of the
     /// provided block height on the network to which this Parameters value applies.
     fn is_nu_active(&self, nu: NetworkUpgrade, height: BlockHeight) -> bool {
         self.activation_height(nu).map_or(false, |h| h <= height)
     }
+
+    /// The coin type for ZEC, as defined by [SLIP 44].
+    ///
+    /// [SLIP 44]: https://github.com/satoshilabs/slips/blob/master/slip-0044.md
+    fn coin_type(&self) -> u32;
+
+    /// Returns the human-readable prefix for Bech32-encoded Sapling extended spending keys
+    /// the network to which this Parameters value applies.
+    ///
+    /// Defined in [ZIP 32].
+    ///
+    /// [`ExtendedSpendingKey`]: zcash_primitives::zip32::ExtendedSpendingKey
+    /// [ZIP 32]: https://github.com/zcash/zips/blob/master/zip-0032.rst
+    fn hrp_sapling_extended_spending_key(&self) -> &str;
+
+    /// Returns the human-readable prefix for Bech32-encoded Sapling extended full
+    /// viewing keys for the network to which this Parameters value applies.
+    ///
+    /// Defined in [ZIP 32].
+    ///
+    /// [`ExtendedFullViewingKey`]: zcash_primitives::zip32::ExtendedFullViewingKey
+    /// [ZIP 32]: https://github.com/zcash/zips/blob/master/zip-0032.rst
+    fn hrp_sapling_extended_full_viewing_key(&self) -> &str;
+
+    /// Returns the Bech32-encoded human-readable prefix for Sapling payment addresses
+    /// viewing keys for the network to which this Parameters value applies.
+    ///
+    /// Defined in section 5.6.4 of the [Zcash Protocol Specification].
+    ///
+    /// [`PaymentAddress`]: zcash_primitives::primitives::PaymentAddress
+    /// [Zcash Protocol Specification]: https://github.com/zcash/zips/blob/master/protocol/protocol.pdf
+    fn hrp_sapling_payment_address(&self) -> &str;
+
+    /// Returns the human-readable prefix for Base58Check-encoded transparent
+    /// pay-to-public-key-hash payment addresses for the network to which this Parameters value
+    /// applies.
+    ///
+    /// [`TransparentAddress::PublicKey`]: zcash_primitives::legacy::TransparentAddress::PublicKey
+    fn b58_pubkey_address_prefix(&self) -> [u8; 2];
+
+    /// Returns the human-readable prefix for Base58Check-encoded transparent pay-to-script-hash
+    /// payment addresses for the network to which this Parameters value applies.
+    ///
+    /// [`TransparentAddress::Script`]: zcash_primitives::legacy::TransparentAddress::Script
+    fn b58_script_address_prefix(&self) -> [u8; 2];
 }
 
 /// Marker struct for the production network.
@@ -165,8 +196,17 @@ impl Parameters for MainNetwork {
             NetworkUpgrade::Heartwood => Some(BlockHeight(903_000)),
             NetworkUpgrade::Canopy => Some(BlockHeight(1_046_400)),
             NetworkUpgrade::Nu5 => Some(BlockHeight(1_687_104)),
+            #[cfg(feature = "zfuture")]
             NetworkUpgrade::ZFuture => None,
         }
+    }
+
+    fn coin_type(&self) -> u32 {
+        constants::mainnet::COIN_TYPE
+    }
+
+    fn hrp_sapling_extended_spending_key(&self) -> &str {
+        constants::mainnet::HRP_SAPLING_EXTENDED_SPENDING_KEY
     }
 
     fn hrp_sapling_extended_full_viewing_key(&self) -> &str {
@@ -200,10 +240,18 @@ impl Parameters for TestNetwork {
             NetworkUpgrade::Blossom => Some(BlockHeight(584_000)),
             NetworkUpgrade::Heartwood => Some(BlockHeight(903_800)),
             NetworkUpgrade::Canopy => Some(BlockHeight(1_028_500)),
-            NetworkUpgrade::Nu5 => None,
-            
+            NetworkUpgrade::Nu5 => Some(BlockHeight(1_599_200)),
+            #[cfg(feature = "zfuture")]
             NetworkUpgrade::ZFuture => None,
         }
+    }
+
+    fn coin_type(&self) -> u32 {
+        constants::testnet::COIN_TYPE
+    }
+
+    fn hrp_sapling_extended_spending_key(&self) -> &str {
+        constants::testnet::HRP_SAPLING_EXTENDED_SPENDING_KEY
     }
 
     fn hrp_sapling_extended_full_viewing_key(&self) -> &str {
@@ -234,6 +282,20 @@ impl Parameters for Network {
         match self {
             Network::MainNetwork => MAIN_NETWORK.activation_height(nu),
             Network::TestNetwork => TEST_NETWORK.activation_height(nu),
+        }
+    }
+
+    fn coin_type(&self) -> u32 {
+        match self {
+            Network::MainNetwork => MAIN_NETWORK.coin_type(),
+            Network::TestNetwork => TEST_NETWORK.coin_type(),
+        }
+    }
+
+    fn hrp_sapling_extended_spending_key(&self) -> &str {
+        match self {
+            Network::MainNetwork => MAIN_NETWORK.hrp_sapling_extended_spending_key(),
+            Network::TestNetwork => TEST_NETWORK.hrp_sapling_extended_spending_key(),
         }
     }
 
@@ -301,7 +363,7 @@ pub enum NetworkUpgrade {
     /// This upgrade is expected never to activate on mainnet;
     /// it is intended for use in integration testing of functionality
     /// that is a candidate for integration in a future network upgrade.
-    
+    #[cfg(feature = "zfuture")]
     ZFuture,
 }
 
@@ -314,7 +376,7 @@ impl fmt::Display for NetworkUpgrade {
             NetworkUpgrade::Heartwood => write!(f, "Heartwood"),
             NetworkUpgrade::Canopy => write!(f, "Canopy"),
             NetworkUpgrade::Nu5 => write!(f, "Nu5"),
-            
+            #[cfg(feature = "zfuture")]
             NetworkUpgrade::ZFuture => write!(f, "ZFUTURE"),
         }
     }
@@ -329,7 +391,7 @@ impl NetworkUpgrade {
             NetworkUpgrade::Heartwood => BranchId::Heartwood,
             NetworkUpgrade::Canopy => BranchId::Canopy,
             NetworkUpgrade::Nu5 => BranchId::Nu5,
-            
+            #[cfg(feature = "zfuture")]
             NetworkUpgrade::ZFuture => BranchId::ZFuture,
         }
     }
@@ -381,7 +443,7 @@ pub enum BranchId {
     Nu5,
     /// Candidates for future consensus rules; this branch will never
     /// activate on mainnet.
-    
+    #[cfg(feature = "zfuture")]
     ZFuture,
 }
 
@@ -396,8 +458,8 @@ impl TryFrom<u32> for BranchId {
             0x2bb4_0e60 => Ok(BranchId::Blossom),
             0xf5b9_230b => Ok(BranchId::Heartwood),
             0xe9ff_75a6 => Ok(BranchId::Canopy),
-            0xf919_a198 => Ok(BranchId::Nu5),
-            
+            0xc2d6_d0b4 => Ok(BranchId::Nu5),
+            #[cfg(feature = "zfuture")]
             0xffff_ffff => Ok(BranchId::ZFuture),
             _ => Err("Unknown consensus branch ID"),
         }
@@ -413,8 +475,8 @@ impl From<BranchId> for u32 {
             BranchId::Blossom => 0x2bb4_0e60,
             BranchId::Heartwood => 0xf5b9_230b,
             BranchId::Canopy => 0xe9ff_75a6,
-            BranchId::Nu5 => 0xf919_a198,
-            
+            BranchId::Nu5 => 0xc2d6_d0b4,
+            #[cfg(feature = "zfuture")]
             BranchId::ZFuture => 0xffff_ffff,
         }
     }
@@ -524,6 +586,7 @@ pub mod testing {
             })
     }
 }
+
 
 #[cfg(test)]
 mod tests {

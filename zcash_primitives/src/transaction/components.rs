@@ -5,13 +5,22 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use ff::PrimeField;
 use group::GroupEncoding;
 
-use std::convert::TryFrom;
 use std::io::{self, Read, Write};
 
-use crate::extensions::transparent as tze;
-use crate::legacy::Script;
-use crate::redjubjub::{PublicKey, Signature};
-use crate::serialize::{CompactSize, Vector};
+#[cfg(feature = "zfuture")]
+use std::convert::TryFrom;
+
+use crate::{
+    legacy::Script,
+    primitives::Nullifier,
+    redjubjub::{PublicKey, Signature},
+};
+
+#[cfg(feature = "zfuture")]
+use crate::{
+    extensions::transparent as tze,
+    serialize::{CompactSize, Vector},
+};
 
 pub mod amount;
 pub use self::amount::Amount;
@@ -121,19 +130,22 @@ impl TxOut {
     }
 }
 
+#[cfg(feature = "zfuture")]
+fn to_io_error(_: std::num::TryFromIntError) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "value out of range")
+}
+
 #[derive(Clone, Debug, PartialEq)]
+#[cfg(feature = "zfuture")]
 pub struct TzeIn {
     pub prevout: OutPoint,
     pub witness: tze::Witness,
 }
 
-fn to_io_error(_: std::num::TryFromIntError) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "value out of range")
-}
-
-/// Transaction encoding and decoding functions conforming to ZIP-222
+/// Transaction encoding and decoding functions conforming to [ZIP 222].
 ///
-/// https://zips.z.cash/zip-0222#encoding-in-transactions
+/// [ZIP 222]: https://zips.z.cash/zip-0222#encoding-in-transactions
+#[cfg(feature = "zfuture")]
 impl TzeIn {
     /// Convenience constructor
     pub fn new(prevout: OutPoint, extension_id: u32, mode: u32) -> Self {
@@ -161,8 +173,8 @@ impl TzeIn {
         Ok(TzeIn {
             prevout,
             witness: tze::Witness {
-                extension_id: u32::try_from(extension_id).map_err(|e| to_io_error(e))?,
-                mode: u32::try_from(mode).map_err(|e| to_io_error(e))?,
+                extension_id: u32::try_from(extension_id).map_err(to_io_error)?,
+                mode: u32::try_from(mode).map_err(to_io_error)?,
                 payload,
             },
         })
@@ -177,12 +189,12 @@ impl TzeIn {
 
         CompactSize::write(
             &mut writer,
-            usize::try_from(self.witness.extension_id).map_err(|e| to_io_error(e))?,
+            usize::try_from(self.witness.extension_id).map_err(to_io_error)?,
         )?;
 
         CompactSize::write(
             &mut writer,
-            usize::try_from(self.witness.mode).map_err(|e| to_io_error(e))?,
+            usize::try_from(self.witness.mode).map_err(to_io_error)?,
         )
     }
 
@@ -191,6 +203,8 @@ impl TzeIn {
     /// This calls [`write_without_witness`] to serialize witness metadata,
     /// then appends the witness bytes themselves. This is the encoded
     /// form that is used in a serialized transaction.
+    ///
+    /// [`write_without_witness`]: TzeIn::write_without_witness
     pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
         self.write_without_witness(&mut writer)?;
         Vector::write(&mut writer, &self.witness.payload, |w, b| w.write_u8(*b))
@@ -198,11 +212,13 @@ impl TzeIn {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[cfg(feature = "zfuture")]
 pub struct TzeOut {
     pub value: Amount,
     pub precondition: tze::Precondition,
 }
 
+#[cfg(feature = "zfuture")]
 impl TzeOut {
     pub fn read<R: Read>(mut reader: &mut R) -> io::Result<Self> {
         let value = {
@@ -219,8 +235,8 @@ impl TzeOut {
         Ok(TzeOut {
             value,
             precondition: tze::Precondition {
-                extension_id: u32::try_from(extension_id).map_err(|e| to_io_error(e))?,
-                mode: u32::try_from(mode).map_err(|e| to_io_error(e))?,
+                extension_id: u32::try_from(extension_id).map_err(to_io_error)?,
+                mode: u32::try_from(mode).map_err(to_io_error)?,
                 payload,
             },
         })
@@ -231,11 +247,11 @@ impl TzeOut {
 
         CompactSize::write(
             &mut writer,
-            usize::try_from(self.precondition.extension_id).map_err(|e| to_io_error(e))?,
+            usize::try_from(self.precondition.extension_id).map_err(to_io_error)?,
         )?;
         CompactSize::write(
             &mut writer,
-            usize::try_from(self.precondition.mode).map_err(|e| to_io_error(e))?,
+            usize::try_from(self.precondition.mode).map_err(to_io_error)?,
         )?;
         Vector::write(&mut writer, &self.precondition.payload, |w, b| {
             w.write_u8(*b)
@@ -247,7 +263,7 @@ impl TzeOut {
 pub struct SpendDescription {
     pub cv: jubjub::ExtendedPoint,
     pub anchor: bls12_381::Scalar,
-    pub nullifier: [u8; 32],
+    pub nullifier: Nullifier,
     pub rk: PublicKey,
     pub zkproof: [u8; GROTH_PROOF_SIZE],
     pub spend_auth_sig: Option<Signature>,
@@ -287,8 +303,8 @@ impl SpendDescription {
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "anchor not in field"))?
         };
 
-        let mut nullifier = [0u8; 32];
-        reader.read_exact(&mut nullifier)?;
+        let mut nullifier = Nullifier([0u8; 32]);
+        reader.read_exact(&mut nullifier.0)?;
 
         // Consensus rules (§4.4):
         // - Canonical encoding is enforced here.
@@ -320,7 +336,7 @@ impl SpendDescription {
     pub fn write<W: Write>(&self, mut writer: W) -> io::Result<()> {
         writer.write_all(&self.cv.to_bytes())?;
         writer.write_all(self.anchor.to_repr().as_ref())?;
-        writer.write_all(&self.nullifier)?;
+        writer.write_all(&self.nullifier.0)?;
         self.rk.write(&mut writer)?;
         writer.write_all(&self.zkproof)?;
         match self.spend_auth_sig {

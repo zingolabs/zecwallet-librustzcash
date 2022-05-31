@@ -99,6 +99,12 @@ struct ChainCode([u8; 32]);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DiversifierIndex(pub [u8; 11]);
 
+impl Default for DiversifierIndex {
+    fn default() -> Self {
+        DiversifierIndex::new()
+    }
+}
+
 impl DiversifierIndex {
     pub fn new() -> Self {
         DiversifierIndex([0; 11])
@@ -423,10 +429,7 @@ impl ExtendedFullViewingKey {
     }
 
     pub fn address(&self, j: DiversifierIndex) -> Result<(DiversifierIndex, PaymentAddress), ()> {
-        let (j, d_j) = match self.dk.diversifier(j) {
-            Ok(ret) => ret,
-            Err(()) => return Err(()),
-        };
+        let (j, d_j) = self.dk.diversifier(j)?;
         match self.fvk.vk.to_payment_address(d_j) {
             Some(addr) => Ok((j, addr)),
             None => Err(()),
@@ -1039,7 +1042,7 @@ mod tests {
             match xfvk.dk.diversifier(di) {
                 Ok((l, d)) if l == di => assert_eq!(d.0, tv.d0.unwrap()),
                 Ok((_, _)) => assert!(tv.d0.is_none()),
-                Err(_) => panic!(),
+                Err(()) => panic!(),
             }
 
             // d1
@@ -1047,7 +1050,7 @@ mod tests {
             match xfvk.dk.diversifier(di) {
                 Ok((l, d)) if l == di => assert_eq!(d.0, tv.d1.unwrap()),
                 Ok((_, _)) => assert!(tv.d1.is_none()),
-                Err(_) => panic!(),
+                Err(()) => panic!(),
             }
 
             // d2
@@ -1055,7 +1058,7 @@ mod tests {
             match xfvk.dk.diversifier(di) {
                 Ok((l, d)) if l == di => assert_eq!(d.0, tv.d2.unwrap()),
                 Ok((_, _)) => assert!(tv.d2.is_none()),
-                Err(_) => panic!(),
+                Err(()) => panic!(),
             }
 
             // dmax
