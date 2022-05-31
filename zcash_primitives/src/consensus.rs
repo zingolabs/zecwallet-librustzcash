@@ -497,58 +497,6 @@ impl BranchId {
         // Sprout rules apply before any network upgrade
         BranchId::Sprout
     }
-
-    /// Returns the range of heights for the consensus epoch associated with this branch id.
-    ///
-    /// The resulting tuple implements the [`RangeBounds<BlockHeight>`] trait.
-    pub fn height_range<P: Parameters>(&self, params: &P) -> Option<impl RangeBounds<BlockHeight>> {
-        self.height_bounds(params).map(|(lower, upper)| {
-            (
-                Bound::Included(lower),
-                upper.map_or(Bound::Unbounded, Bound::Excluded),
-            )
-        })
-    }
-
-    /// Returns the range of heights for the consensus epoch associated with this branch id.
-    ///
-    /// The return type of this value is slightly more precise than [`Self::height_range`].
-    pub fn height_bounds<P: Parameters>(
-        &self,
-        params: &P,
-    ) -> Option<(BlockHeight, Option<BlockHeight>)> {
-        match self {
-            BranchId::Sprout => params
-                .activation_height(NetworkUpgrade::Overwinter)
-                .map(|upper| (BlockHeight(0), Some(upper))),
-            BranchId::Overwinter => params
-                .activation_height(NetworkUpgrade::Overwinter)
-                .map(|lower| (lower, params.activation_height(NetworkUpgrade::Sapling))),
-            BranchId::Sapling => params
-                .activation_height(NetworkUpgrade::Sapling)
-                .map(|lower| (lower, params.activation_height(NetworkUpgrade::Blossom))),
-            BranchId::Blossom => params
-                .activation_height(NetworkUpgrade::Blossom)
-                .map(|lower| (lower, params.activation_height(NetworkUpgrade::Heartwood))),
-            BranchId::Heartwood => params
-                .activation_height(NetworkUpgrade::Heartwood)
-                .map(|lower| (lower, params.activation_height(NetworkUpgrade::Canopy))),
-            BranchId::Canopy => params
-                .activation_height(NetworkUpgrade::Canopy)
-                .map(|lower| (lower, params.activation_height(NetworkUpgrade::Nu5))),
-            BranchId::Nu5 => params.activation_height(NetworkUpgrade::Nu5).map(|lower| {
-                
-                let upper = params.activation_height(NetworkUpgrade::ZFuture);
-                #[cfg(not(feature = "zfuture"))]
-                let upper = None;
-                (lower, upper)
-            }),
-            
-            BranchId::ZFuture => params
-                .activation_height(NetworkUpgrade::ZFuture)
-                .map(|lower| (lower, None)),
-        }
-    }
 }
 
 #[cfg(any(test, feature = "test-dependencies"))]
