@@ -6,7 +6,6 @@ use std::sync::mpsc::Sender;
 
 #[cfg(not(feature = "zfuture"))]
 use std::marker::PhantomData;
-use std::{boxed::Box, sync::mpsc::Sender};
 
 use rand::{rngs::OsRng, CryptoRng, RngCore};
 
@@ -277,14 +276,6 @@ impl<'a, P: consensus::Parameters, R: RngCore> Builder<'a, P, R> {
     /// Upon success, returns a tuple containing the final transaction, and the
     /// [`SaplingMetadata`] generated during the build process.
     pub fn build(
-        self,
-        consensus_branch_id: consensus::BranchId,
-        prover: &impl TxProver,
-    ) -> Result<(Transaction, TransactionMetadata), Error> {
-        self.build_with_progress_notifier(consensus_branch_id, prover, None)
-    }
-
-    pub fn build_with_progress_notifier(
         mut self,
         prover: &impl TxProver,
     ) -> Result<(Transaction, SaplingMetadata), Error> {

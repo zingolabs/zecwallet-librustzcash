@@ -9,19 +9,6 @@
 // Temporary until we have addressed all Result<T, ()> cases.
 #![allow(clippy::result_unit_err)]
 
-#[cfg(feature = "transparent-inputs")]
-extern crate ripemd160;
-
-#[cfg(feature = "transparent-inputs")]
-extern crate secp256k1;
-
-#[cfg(test)]
-#[macro_use]
-extern crate hex_literal;
-
-#[cfg(test)]
-extern crate rand_xorshift;
-
 pub mod block;
 pub mod consensus;
 pub mod constants;

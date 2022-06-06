@@ -410,7 +410,7 @@ const UPGRADES_IN_ORDER: &[NetworkUpgrade] = &[
     NetworkUpgrade::Nu5,
 ];
 
-pub const ZIP212_GRACE_PERIOD: u32 = 225792;
+pub const ZIP212_GRACE_PERIOD: u32 = 32256;
 
 /// A globally-unique identifier for a set of consensus rules within the Zcash chain.
 ///
@@ -595,43 +595,6 @@ pub mod testing {
             })
     }
 }
-
-#[cfg(any(test, feature = "test-dependencies"))]
-pub mod testing {
-    use proptest::sample::select;
-    use proptest::strategy::{Just, Strategy};
-
-    use super::{BlockHeight, BranchId, Parameters};
-
-    pub fn arb_branch_id() -> impl Strategy<Value = BranchId> {
-        select(vec![
-            BranchId::Sprout,
-            BranchId::Overwinter,
-            BranchId::Sapling,
-            BranchId::Blossom,
-            BranchId::Heartwood,
-            BranchId::Canopy,
-            BranchId::Nu5,
-            
-            BranchId::ZFuture,
-        ])
-    }
-
-    pub fn arb_height<P: Parameters>(
-        branch_id: BranchId,
-        params: &P,
-    ) -> impl Strategy<Value = Option<BlockHeight>> {
-        branch_id
-            .height_bounds(params)
-            .map_or(Strategy::boxed(Just(None)), |(lower, upper)| {
-                Strategy::boxed(
-                    (lower.0..upper.map_or(std::u32::MAX, |u| u.0))
-                        .prop_map(|h| Some(BlockHeight(h))),
-                )
-            })
-    }
-}
-
 
 #[cfg(test)]
 mod tests {
