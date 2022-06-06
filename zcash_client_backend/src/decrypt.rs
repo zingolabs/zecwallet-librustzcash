@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use zcash_primitives::{
     consensus::{self, BlockHeight},
     memo::MemoBytes,
-    note_encryption::{try_sapling_note_decryption, try_sapling_output_recovery},
-    primitives::{Note, PaymentAddress},
+    sapling::{
+        note_encryption::{try_sapling_note_decryption, try_sapling_output_recovery},
+        Note, PaymentAddress,
+    },
     transaction::Transaction,
-    zip32::ExtendedFullViewingKey,
+    zip32::{AccountId, ExtendedFullViewingKey},
 };
-
-use crate::wallet::AccountId;
 
 /// A decrypted shielded output.
 pub struct DecryptedOutput {
@@ -42,42 +42,30 @@ pub fn decrypt_transaction<P: consensus::Parameters>(
 ) -> Vec<DecryptedOutput> {
     let mut decrypted = vec![];
 
-    for (account, extfvk) in extfvks.iter() {
-        let ivk = extfvk.fvk.vk.ivk();
-        let ovk = extfvk.fvk.ovk;
+    if let Some(bundle) = tx.sapling_bundle() {
+        for (account, extfvk) in extfvks.iter() {
+            let ivk = extfvk.fvk.vk.ivk();
+            let ovk = extfvk.fvk.ovk;
 
-        for (index, output) in tx.shielded_outputs.iter().enumerate() {
-            let ((note, to, memo), outgoing) = match try_sapling_note_decryption(
-                params,
-                height,
-                &ivk,
-                &output.ephemeral_key,
-                &output.cmu,
-                &output.enc_ciphertext,
-            ) {
-                Some(ret) => (ret, false),
-                None => match try_sapling_output_recovery(
-                    params,
-                    height,
-                    &ovk,
-                    &output.cv,
-                    &output.cmu,
-                    &output.ephemeral_key,
-                    &output.enc_ciphertext,
-                    &output.out_ciphertext,
-                ) {
-                    Some(ret) => (ret, true),
-                    None => continue,
-                },
-            };
-            decrypted.push(DecryptedOutput {
-                index,
-                note,
-                account: *account,
-                to,
-                memo,
-                outgoing,
-            })
+            for (index, output) in bundle.shielded_outputs.iter().enumerate() {
+                let ((note, to, memo), outgoing) =
+                    match try_sapling_note_decryption(params, height, &ivk, output) {
+                        Some(ret) => (ret, false),
+                        None => match try_sapling_output_recovery(params, height, &ovk, output) {
+                            Some(ret) => (ret, true),
+                            None => continue,
+                        },
+                    };
+
+                decrypted.push(DecryptedOutput {
+                    index,
+                    note,
+                    account: *account,
+                    to,
+                    memo,
+                    outgoing,
+                })
+            }
         }
     }
 

@@ -7,7 +7,9 @@ use bellman::{Circuit, ConstraintSystem, SynthesisError};
 
 use zcash_primitives::constants;
 
-use zcash_primitives::primitives::{PaymentAddress, ProofGenerationKey, ValueCommitment};
+use zcash_primitives::sapling::{
+    PaymentAddress, ProofGenerationKey, ValueCommitment, SAPLING_COMMITMENT_TREE_DEPTH,
+};
 
 use super::ecc;
 use super::pedersen_hash;
@@ -22,7 +24,10 @@ use bellman::gadgets::multipack;
 use bellman::gadgets::num;
 use bellman::gadgets::Assignment;
 
-pub const TREE_DEPTH: usize = zcash_primitives::sapling::SAPLING_COMMITMENT_TREE_DEPTH;
+#[cfg(test)]
+use ff::PrimeFieldBits;
+
+pub const TREE_DEPTH: usize = SAPLING_COMMITMENT_TREE_DEPTH;
 
 /// This is an instance of the `Spend` circuit.
 pub struct Spend {
@@ -459,7 +464,7 @@ impl Circuit<bls12_381::Scalar> for Output {
             // Witness the sign bit
             let sign_bit = boolean::Boolean::from(boolean::AllocatedBit::alloc(
                 cs.namespace(|| "pk_d bit of u"),
-                pk_d.map(|e| e.get_u().is_odd()),
+                pk_d.map(|e| e.get_u().is_odd().into()),
             )?);
 
             // Extend the note with pk_d representation
@@ -516,10 +521,7 @@ fn test_input_circuit_with_bls12_381() {
     use group::Group;
     use rand_core::{RngCore, SeedableRng};
     use rand_xorshift::XorShiftRng;
-    use zcash_primitives::{
-        pedersen_hash,
-        primitives::{Diversifier, Note, ProofGenerationKey, Rseed},
-    };
+    use zcash_primitives::sapling::{pedersen_hash, Diversifier, Note, ProofGenerationKey, Rseed};
 
     let mut rng = XorShiftRng::from_seed([
         0x58, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,
@@ -592,10 +594,14 @@ fn test_input_circuit_with_bls12_381() {
 
                 cur = jubjub::ExtendedPoint::from(pedersen_hash::pedersen_hash(
                     pedersen_hash::Personalization::MerkleTree(i),
-                    lhs.into_iter()
+                    lhs.iter()
+                        .by_vals()
                         .take(bls12_381::Scalar::NUM_BITS as usize)
-                        .chain(rhs.into_iter().take(bls12_381::Scalar::NUM_BITS as usize))
-                        .cloned(),
+                        .chain(
+                            rhs.iter()
+                                .by_vals()
+                                .take(bls12_381::Scalar::NUM_BITS as usize),
+                        ),
                 ))
                 .to_affine()
                 .get_u();
@@ -659,10 +665,7 @@ fn test_input_circuit_with_bls12_381_external_test_vectors() {
     use group::Group;
     use rand_core::{RngCore, SeedableRng};
     use rand_xorshift::XorShiftRng;
-    use zcash_primitives::{
-        pedersen_hash,
-        primitives::{Diversifier, Note, ProofGenerationKey, Rseed},
-    };
+    use zcash_primitives::sapling::{pedersen_hash, Diversifier, Note, ProofGenerationKey, Rseed};
 
     let mut rng = XorShiftRng::from_seed([
         0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,
@@ -700,7 +703,7 @@ fn test_input_circuit_with_bls12_381_external_test_vectors() {
     for i in 0..10 {
         let value_commitment = ValueCommitment {
             value: i,
-            randomness: jubjub::Fr::from_str(&(1000 * (i + 1)).to_string()).unwrap(),
+            randomness: jubjub::Fr::from(1000 * (i + 1)),
         };
 
         let proof_generation_key = ProofGenerationKey {
@@ -737,11 +740,11 @@ fn test_input_circuit_with_bls12_381_external_test_vectors() {
                 jubjub::ExtendedPoint::from(value_commitment.commitment()).to_affine();
             assert_eq!(
                 expected_value_commitment.get_u(),
-                bls12_381::Scalar::from_str(&expected_commitment_us[i as usize]).unwrap()
+                bls12_381::Scalar::from_str_vartime(expected_commitment_us[i as usize]).unwrap()
             );
             assert_eq!(
                 expected_value_commitment.get_v(),
-                bls12_381::Scalar::from_str(&expected_commitment_vs[i as usize]).unwrap()
+                bls12_381::Scalar::from_str_vartime(expected_commitment_vs[i as usize]).unwrap()
             );
             let note = Note {
                 value: value_commitment.value,
@@ -769,10 +772,14 @@ fn test_input_circuit_with_bls12_381_external_test_vectors() {
 
                 cur = jubjub::ExtendedPoint::from(pedersen_hash::pedersen_hash(
                     pedersen_hash::Personalization::MerkleTree(i),
-                    lhs.into_iter()
+                    lhs.iter()
+                        .by_vals()
                         .take(bls12_381::Scalar::NUM_BITS as usize)
-                        .chain(rhs.into_iter().take(bls12_381::Scalar::NUM_BITS as usize))
-                        .cloned(),
+                        .chain(
+                            rhs.iter()
+                                .by_vals()
+                                .take(bls12_381::Scalar::NUM_BITS as usize),
+                        ),
                 ))
                 .to_affine()
                 .get_u();
@@ -836,7 +843,7 @@ fn test_output_circuit_with_bls12_381() {
     use group::Group;
     use rand_core::{RngCore, SeedableRng};
     use rand_xorshift::XorShiftRng;
-    use zcash_primitives::primitives::{Diversifier, ProofGenerationKey, Rseed};
+    use zcash_primitives::sapling::{Diversifier, ProofGenerationKey, Rseed};
 
     let mut rng = XorShiftRng::from_seed([
         0x58, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06, 0xbc,

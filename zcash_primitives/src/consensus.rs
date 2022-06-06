@@ -240,7 +240,7 @@ impl Parameters for TestNetwork {
             NetworkUpgrade::Blossom => Some(BlockHeight(584_000)),
             NetworkUpgrade::Heartwood => Some(BlockHeight(903_800)),
             NetworkUpgrade::Canopy => Some(BlockHeight(1_028_500)),
-            NetworkUpgrade::Nu5 => Some(BlockHeight(1_599_200)),
+            NetworkUpgrade::Nu5 => Some(BlockHeight(1_842_420)),
             #[cfg(feature = "zfuture")]
             NetworkUpgrade::ZFuture => None,
         }
@@ -424,7 +424,7 @@ pub const ZIP212_GRACE_PERIOD: u32 = 225792;
 ///
 /// See [ZIP 200](https://zips.z.cash/zip-0200) for more details.
 ///
-/// [`signature_hash`]: crate::transaction::signature_hash
+/// [`signature_hash`]: crate::transaction::sighash::signature_hash
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BranchId {
     /// The consensus rules at the launch of Zcash.
@@ -512,7 +512,12 @@ impl BranchId {
 
     /// Returns the range of heights for the consensus epoch associated with this branch id.
     ///
-    /// The return type of this value is slightly more precise than [`Self::height_range`].
+    /// The return type of this value is slightly more precise than [`Self::height_range`]:
+    /// - `Some((x, Some(y)))` means that the consensus rules corresponding to this branch id
+    ///   are in effect for the range `x..y`
+    /// - `Some((x, None))` means that the consensus rules corresponding to this branch id are
+    ///   in effect for the range `x..`
+    /// - `None` means that the consensus rules corresponding to this branch id are never in effect.
     pub fn height_bounds<P: Parameters>(
         &self,
         params: &P,
@@ -537,17 +542,57 @@ impl BranchId {
                 .activation_height(NetworkUpgrade::Canopy)
                 .map(|lower| (lower, params.activation_height(NetworkUpgrade::Nu5))),
             BranchId::Nu5 => params.activation_height(NetworkUpgrade::Nu5).map(|lower| {
-                
+                #[cfg(feature = "zfuture")]
                 let upper = params.activation_height(NetworkUpgrade::ZFuture);
                 #[cfg(not(feature = "zfuture"))]
                 let upper = None;
                 (lower, upper)
             }),
-            
+            #[cfg(feature = "zfuture")]
             BranchId::ZFuture => params
                 .activation_height(NetworkUpgrade::ZFuture)
                 .map(|lower| (lower, None)),
         }
+    }
+
+    pub fn sprout_uses_groth_proofs(&self) -> bool {
+        !matches!(self, BranchId::Sprout | BranchId::Overwinter)
+    }
+}
+
+#[cfg(any(test, feature = "test-dependencies"))]
+pub mod testing {
+    use proptest::sample::select;
+    use proptest::strategy::{Just, Strategy};
+
+    use super::{BlockHeight, BranchId, Parameters};
+
+    pub fn arb_branch_id() -> impl Strategy<Value = BranchId> {
+        select(vec![
+            BranchId::Sprout,
+            BranchId::Overwinter,
+            BranchId::Sapling,
+            BranchId::Blossom,
+            BranchId::Heartwood,
+            BranchId::Canopy,
+            BranchId::Nu5,
+            #[cfg(feature = "zfuture")]
+            BranchId::ZFuture,
+        ])
+    }
+
+    pub fn arb_height<P: Parameters>(
+        branch_id: BranchId,
+        params: &P,
+    ) -> impl Strategy<Value = Option<BlockHeight>> {
+        branch_id
+            .height_bounds(params)
+            .map_or(Strategy::boxed(Just(None)), |(lower, upper)| {
+                Strategy::boxed(
+                    (lower.0..upper.map_or(std::u32::MAX, |u| u.0))
+                        .prop_map(|h| Some(BlockHeight(h))),
+                )
+            })
     }
 }
 

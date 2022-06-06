@@ -4,7 +4,9 @@
 //! light clients.
 
 // Catch documentation errors caused by code changes.
-#![deny(intra_doc_link_resolution_failure)]
+#![deny(broken_intra_doc_links)]
+// Temporary until we have addressed all Result<T, ()> cases.
+#![allow(clippy::result_unit_err)]
 
 pub mod address;
 pub mod data_api;

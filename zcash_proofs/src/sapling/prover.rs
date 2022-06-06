@@ -10,9 +10,10 @@ use std::ops::{AddAssign, Neg};
 use zcash_primitives::{
     constants::{SPENDING_KEY_GENERATOR, VALUE_COMMITMENT_RANDOMNESS_GENERATOR},
     merkle_tree::MerklePath,
-    primitives::{Diversifier, Note, PaymentAddress, ProofGenerationKey, Rseed, ValueCommitment},
-    redjubjub::{PrivateKey, PublicKey, Signature},
-    sapling::Node,
+    sapling::{
+        redjubjub::{PrivateKey, PublicKey, Signature},
+        Diversifier, Node, Note, PaymentAddress, ProofGenerationKey, Rseed, ValueCommitment,
+    },
     transaction::components::Amount,
 };
 
@@ -85,8 +86,7 @@ impl SaplingProvingContext {
         let payment_address = viewing_key.to_payment_address(diversifier).ok_or(())?;
 
         // This is the result of the re-randomization, we compute it for the caller
-        let rk =
-            PublicKey(proof_generation_key.ak.clone().into()).randomize(ar, SPENDING_KEY_GENERATOR);
+        let rk = PublicKey(proof_generation_key.ak.into()).randomize(ar, SPENDING_KEY_GENERATOR);
 
         // Let's compute the nullifier while we have the position
         let note = Note {
