@@ -115,6 +115,11 @@ pub struct TransactionRequest {
 }
 
 impl TransactionRequest {
+    /// Constructs a new empty transaction request.
+    pub fn empty() -> Self {
+        Self { payments: vec![] }
+    }
+
     /// Constructs a new transaction request that obeys the ZIP-321 invariants
     pub fn new(payments: Vec<Payment>) -> Result<TransactionRequest, Zip321Error> {
         let request = TransactionRequest { payments };
@@ -233,11 +238,15 @@ impl TransactionRequest {
             parse::lead_addr(params)(uri).map_err(|e| Zip321Error::ParseError(e.to_string()))?;
 
         // Parse the remaining parameters as an undifferentiated list
-        let (_, xs) = all_consuming(preceded(
-            char('?'),
-            separated_list0(char('&'), parse::zcashparam(params)),
-        ))(rest)
-        .map_err(|e| Zip321Error::ParseError(e.to_string()))?;
+        let (_, xs) = if rest.is_empty() {
+            ("", vec![])
+        } else {
+            all_consuming(preceded(
+                char('?'),
+                separated_list0(char('&'), parse::zcashparam(params)),
+            ))(rest)
+            .map_err(|e| Zip321Error::ParseError(e.to_string()))?
+        };
 
         // Construct sets of payment parameters, keyed by the payment index.
         let mut params_by_index: HashMap<usize, Vec<parse::Param>> = HashMap::new();
@@ -374,7 +383,7 @@ mod parse {
     use core::fmt::Debug;
 
     use nom::{
-        bytes::complete::{tag, take_until},
+        bytes::complete::{tag, take_till},
         character::complete::{alpha1, char, digit0, digit1, one_of},
         combinator::{map_opt, map_res, opt, recognize},
         sequence::{preceded, separated_pair, tuple},
@@ -476,7 +485,7 @@ mod parse {
     ) -> impl Fn(&str) -> IResult<&str, Option<IndexedParam>> + '_ {
         move |input: &str| {
             map_opt(
-                preceded(tag("zcash:"), take_until("?")),
+                preceded(tag("zcash:"), take_till(|c| c == '?')),
                 |addr_str: &str| {
                     if addr_str.is_empty() {
                         Some(None) // no address is ok, so wrap in `Some`
@@ -645,7 +654,7 @@ pub mod testing {
     use proptest::strategy::Strategy;
     use zcash_primitives::{
         consensus::TEST_NETWORK, legacy::testing::arb_transparent_addr,
-        sapling::keys::testing::arb_shielded_addr,
+        sapling::testing::arb_payment_address,
         transaction::components::amount::testing::arb_nonnegative_amount,
     };
 
@@ -655,7 +664,7 @@ pub mod testing {
 
     prop_compose! {
         fn arb_unified_addr()(
-            sapling in arb_shielded_addr(),
+            sapling in arb_payment_address(),
             transparent in option::of(arb_transparent_addr()),
         ) -> UnifiedAddress {
             UnifiedAddress::from_receivers(None, Some(sapling), transparent).unwrap()
@@ -664,7 +673,7 @@ pub mod testing {
 
     pub fn arb_addr() -> impl Strategy<Value = RecipientAddress> {
         prop_oneof![
-            arb_shielded_addr().prop_map(RecipientAddress::Shielded),
+            arb_payment_address().prop_map(RecipientAddress::Shielded),
             arb_transparent_addr().prop_map(RecipientAddress::Transparent),
             arb_unified_addr().prop_map(RecipientAddress::Unified),
         ]
@@ -793,7 +802,7 @@ mod tests {
         let expected = TransactionRequest {
             payments: vec![
                 Payment {
-                    recipient_address: RecipientAddress::Shielded(decode_payment_address(TEST_NETWORK.hrp_sapling_payment_address(), "ztestsapling1n65uaftvs2g7075q2x2a04shfk066u3lldzxsrprfrqtzxnhc9ps73v4lhx4l9yfxj46sl0q90k").unwrap().unwrap()),
+                    recipient_address: RecipientAddress::Shielded(decode_payment_address(TEST_NETWORK.hrp_sapling_payment_address(), "ztestsapling1n65uaftvs2g7075q2x2a04shfk066u3lldzxsrprfrqtzxnhc9ps73v4lhx4l9yfxj46sl0q90k").unwrap()),
                     amount: Amount::from_u64(376876902796286).unwrap(),
                     memo: None,
                     label: None,
@@ -807,11 +816,32 @@ mod tests {
     }
 
     #[test]
+    fn test_zip321_parse_no_query_params() {
+        let uri = "zcash:ztestsapling1n65uaftvs2g7075q2x2a04shfk066u3lldzxsrprfrqtzxnhc9ps73v4lhx4l9yfxj46sl0q90k";
+        let parse_result = TransactionRequest::from_uri(&TEST_NETWORK, uri).unwrap();
+
+        let expected = TransactionRequest {
+            payments: vec![
+                Payment {
+                    recipient_address: RecipientAddress::Shielded(decode_payment_address(TEST_NETWORK.hrp_sapling_payment_address(), "ztestsapling1n65uaftvs2g7075q2x2a04shfk066u3lldzxsrprfrqtzxnhc9ps73v4lhx4l9yfxj46sl0q90k").unwrap()),
+                    amount: Amount::from_u64(0).unwrap(),
+                    memo: None,
+                    label: None,
+                    message: None,
+                    other_params: vec![],
+                }
+            ]
+        };
+
+        assert_eq!(parse_result, expected);
+    }
+
+    #[test]
     fn test_zip321_roundtrip_empty_message() {
         let req = TransactionRequest {
             payments: vec![
                 Payment {
-                    recipient_address: RecipientAddress::Shielded(decode_payment_address(TEST_NETWORK.hrp_sapling_payment_address(), "ztestsapling1n65uaftvs2g7075q2x2a04shfk066u3lldzxsrprfrqtzxnhc9ps73v4lhx4l9yfxj46sl0q90k").unwrap().unwrap()),
+                    recipient_address: RecipientAddress::Shielded(decode_payment_address(TEST_NETWORK.hrp_sapling_payment_address(), "ztestsapling1n65uaftvs2g7075q2x2a04shfk066u3lldzxsrprfrqtzxnhc9ps73v4lhx4l9yfxj46sl0q90k").unwrap()),
                     amount: Amount::from_u64(0).unwrap(),
                     memo: None,
                     label: None,

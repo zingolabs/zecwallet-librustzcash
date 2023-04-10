@@ -1,8 +1,9 @@
 use bech32::{self, FromBase32, ToBase32, Variant};
 use std::cmp;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::error::Error;
 use std::fmt;
+use std::num::TryFromIntError;
 
 use crate::Network;
 
@@ -88,6 +89,13 @@ impl From<Typecode> for u32 {
     }
 }
 
+impl TryFrom<Typecode> for usize {
+    type Error = TryFromIntError;
+    fn try_from(t: Typecode) -> Result<Self, Self::Error> {
+        u32::from(t).try_into()
+    }
+}
+
 impl Typecode {
     fn is_transparent(&self) -> bool {
         // Unknown typecodes are treated as not transparent for the purpose of disallowing
@@ -97,7 +105,7 @@ impl Typecode {
 }
 
 /// An error while attempting to parse a string as a Zcash address.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ParseError {
     /// The unified container contains both P2PKH and P2SH items.
     BothP2phkAndP2sh,

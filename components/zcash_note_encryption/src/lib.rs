@@ -24,16 +24,12 @@ extern crate alloc;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
-use core::convert::TryInto;
-
 use chacha20::{
-    cipher::{NewCipher, StreamCipher, StreamCipherSeek},
+    cipher::{StreamCipher, StreamCipherSeek},
     ChaCha20,
 };
-use chacha20poly1305::{
-    aead::{AeadInPlace, NewAead},
-    ChaCha20Poly1305,
-};
+use chacha20poly1305::{aead::AeadInPlace, ChaCha20Poly1305, KeyInit};
+use cipher::KeyIvInit;
 
 use rand_core::RngCore;
 use subtle::{Choice, ConstantTimeEq};
@@ -115,6 +111,7 @@ enum NoteValidity {
 pub trait Domain {
     type EphemeralSecretKey: ConstantTimeEq;
     type EphemeralPublicKey;
+    type PreparedEphemeralPublicKey;
     type SharedSecret;
     type SymmetricKey: AsRef<[u8]>;
     type Note;
@@ -138,6 +135,9 @@ pub trait Domain {
     /// Extracts the `DiversifiedTransmissionKey` from the note.
     fn get_pk_d(note: &Self::Note) -> Self::DiversifiedTransmissionKey;
 
+    /// Prepare an ephemeral public key for more efficient scalar multiplication.
+    fn prepare_epk(epk: Self::EphemeralPublicKey) -> Self::PreparedEphemeralPublicKey;
+
     /// Derives `EphemeralPublicKey` from `esk` and the note's diversifier.
     fn ka_derive_public(
         note: &Self::Note,
@@ -154,7 +154,7 @@ pub trait Domain {
     /// decryption.
     fn ka_agree_dec(
         ivk: &Self::IncomingViewingKey,
-        epk: &Self::EphemeralPublicKey,
+        epk: &Self::PreparedEphemeralPublicKey,
     ) -> Self::SharedSecret;
 
     /// Derives the `SymmetricKey` used to encrypt the note plaintext.
@@ -171,20 +171,7 @@ pub trait Domain {
     fn kdf(secret: Self::SharedSecret, ephemeral_key: &EphemeralKeyBytes) -> Self::SymmetricKey;
 
     /// Encodes the given `Note` and `Memo` as a note plaintext.
-    ///
-    /// # Future breaking changes
-    ///
-    /// The `recipient` argument is present as a secondary way to obtain the diversifier;
-    /// this is due to a historical quirk of how the Sapling `Note` struct was implemented
-    /// in the `zcash_primitives` crate. `recipient` will be removed from this method in a
-    /// future crate release, once [`zcash_primitives` has been refactored].
-    ///
-    /// [`zcash_primitives` has been refactored]: https://github.com/zcash/librustzcash/issues/454
-    fn note_plaintext_bytes(
-        note: &Self::Note,
-        recipient: &Self::Recipient,
-        memo: &Self::Memo,
-    ) -> NotePlaintextBytes;
+    fn note_plaintext_bytes(note: &Self::Note, memo: &Self::Memo) -> NotePlaintextBytes;
 
     /// Derives the [`OutgoingCipherKey`] for an encrypted note, given the note-specific
     /// public data and an `OutgoingViewingKey`.
@@ -308,10 +295,15 @@ pub trait BatchDomain: Domain {
     /// them.
     fn batch_epk(
         ephemeral_keys: impl Iterator<Item = EphemeralKeyBytes>,
-    ) -> Vec<(Option<Self::EphemeralPublicKey>, EphemeralKeyBytes)> {
+    ) -> Vec<(Option<Self::PreparedEphemeralPublicKey>, EphemeralKeyBytes)> {
         // Default implementation: do the non-batched thing.
         ephemeral_keys
-            .map(|ephemeral_key| (Self::epk(&ephemeral_key), ephemeral_key))
+            .map(|ephemeral_key| {
+                (
+                    Self::epk(&ephemeral_key).map(Self::prepare_epk),
+                    ephemeral_key,
+                )
+            })
             .collect()
     }
 }
@@ -340,55 +332,10 @@ pub trait ShieldedOutput<D: Domain, const CIPHERTEXT_SIZE: usize> {
 ///
 /// Implements section 4.19 of the
 /// [Zcash Protocol Specification](https://zips.z.cash/protocol/nu5.pdf#saplingandorchardinband)
-/// NB: the example code is only covering the post-Canopy case.
-///
-/// # Examples
-///
-/// ```
-/// extern crate ff;
-/// extern crate rand_core;
-/// extern crate zcash_primitives;
-///
-/// use ff::Field;
-/// use rand_core::OsRng;
-/// use zcash_primitives::{
-///     keys::{OutgoingViewingKey, prf_expand},
-///     consensus::{TEST_NETWORK, TestNetwork, NetworkUpgrade, Parameters},
-///     memo::MemoBytes,
-///     sapling::{
-///         note_encryption::sapling_note_encryption,
-///         util::generate_random_rseed,
-///         Diversifier, PaymentAddress, Rseed, ValueCommitment
-///     },
-/// };
-///
-/// let mut rng = OsRng;
-///
-/// let diversifier = Diversifier([0; 11]);
-/// let pk_d = diversifier.g_d().unwrap();
-/// let to = PaymentAddress::from_parts(diversifier, pk_d).unwrap();
-/// let ovk = Some(OutgoingViewingKey([0; 32]));
-///
-/// let value = 1000;
-/// let rcv = jubjub::Fr::random(&mut rng);
-/// let cv = ValueCommitment {
-///     value,
-///     randomness: rcv.clone(),
-/// };
-/// let height = TEST_NETWORK.activation_height(NetworkUpgrade::Canopy).unwrap();
-/// let rseed = generate_random_rseed(&TEST_NETWORK, height, &mut rng);
-/// let note = to.create_note(value, rseed).unwrap();
-/// let cmu = note.cmu();
-///
-/// let mut enc = sapling_note_encryption::<_, TestNetwork>(ovk, note, to, MemoBytes::empty(), &mut rng);
-/// let encCiphertext = enc.encrypt_note_plaintext();
-/// let outCiphertext = enc.encrypt_outgoing_plaintext(&cv.commitment().into(), &cmu, &mut rng);
-/// ```
 pub struct NoteEncryption<D: Domain> {
     epk: D::EphemeralPublicKey,
     esk: D::EphemeralSecretKey,
     note: D::Note,
-    to: D::Recipient,
     memo: D::Memo,
     /// `None` represents the `ovk = ⊥` case.
     ovk: Option<D::OutgoingViewingKey>,
@@ -397,18 +344,12 @@ pub struct NoteEncryption<D: Domain> {
 impl<D: Domain> NoteEncryption<D> {
     /// Construct a new note encryption context for the specified note,
     /// recipient, and memo.
-    pub fn new(
-        ovk: Option<D::OutgoingViewingKey>,
-        note: D::Note,
-        to: D::Recipient,
-        memo: D::Memo,
-    ) -> Self {
+    pub fn new(ovk: Option<D::OutgoingViewingKey>, note: D::Note, memo: D::Memo) -> Self {
         let esk = D::derive_esk(&note).expect("ZIP 212 is active.");
         NoteEncryption {
             epk: D::ka_derive_public(&note, &esk),
             esk,
             note,
-            to,
             memo,
             ovk,
         }
@@ -423,14 +364,12 @@ impl<D: Domain> NoteEncryption<D> {
         esk: D::EphemeralSecretKey,
         ovk: Option<D::OutgoingViewingKey>,
         note: D::Note,
-        to: D::Recipient,
         memo: D::Memo,
     ) -> Self {
         NoteEncryption {
             epk: D::ka_derive_public(&note, &esk),
             esk,
             note,
-            to,
             memo,
             ovk,
         }
@@ -451,7 +390,7 @@ impl<D: Domain> NoteEncryption<D> {
         let pk_d = D::get_pk_d(&self.note);
         let shared_secret = D::ka_agree_enc(&self.esk, &pk_d);
         let key = D::kdf(shared_secret, &D::epk_bytes(&self.epk));
-        let input = D::note_plaintext_bytes(&self.note, &self.to, &self.memo);
+        let input = D::note_plaintext_bytes(&self.note, &self.memo);
 
         let mut output = [0u8; ENC_CIPHERTEXT_SIZE];
         output[..NOTE_PLAINTEXT_SIZE].copy_from_slice(&input.0);
@@ -516,7 +455,7 @@ pub fn try_note_decryption<D: Domain, Output: ShieldedOutput<D, ENC_CIPHERTEXT_S
 ) -> Option<(D::Note, D::Recipient, D::Memo)> {
     let ephemeral_key = output.ephemeral_key();
 
-    let epk = D::epk(&ephemeral_key)?;
+    let epk = D::prepare_epk(D::epk(&ephemeral_key)?);
     let shared_secret = D::ka_agree_dec(ivk, &epk);
     let key = D::kdf(shared_secret, &ephemeral_key);
 
@@ -613,7 +552,7 @@ pub fn try_compact_note_decryption<D: Domain, Output: ShieldedOutput<D, COMPACT_
 ) -> Option<(D::Note, D::Recipient)> {
     let ephemeral_key = output.ephemeral_key();
 
-    let epk = D::epk(&ephemeral_key)?;
+    let epk = D::prepare_epk(D::epk(&ephemeral_key)?);
     let shared_secret = D::ka_agree_dec(ivk, &epk);
     let key = D::kdf(shared_secret, &ephemeral_key);
 

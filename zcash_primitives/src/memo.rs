@@ -1,7 +1,6 @@
 //! Structs for handling encrypted memos.
 
 use std::cmp::Ordering;
-use std::convert::{TryFrom, TryInto};
 use std::error;
 use std::fmt;
 use std::ops::Deref;
@@ -29,7 +28,7 @@ where
 }
 
 /// Errors that may result from attempting to construct an invalid memo.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     InvalidUtf8(std::str::Utf8Error),
     TooLong(usize),
@@ -126,7 +125,7 @@ impl MemoBytes {
 }
 
 /// Type-safe wrapper around String to enforce memo length requirements.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct TextMemo(String);
 
 impl From<TextMemo> for String {
@@ -275,7 +274,6 @@ impl str::FromStr for Memo {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::TryInto;
     use std::str::FromStr;
 
     use super::{Error, Memo, MemoBytes};

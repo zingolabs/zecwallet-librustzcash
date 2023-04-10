@@ -18,8 +18,6 @@
 //! - `tx_b`: `[ TzeIn(tx_a, preimage_1) -> TzeOut(value, hash_2) ]`
 //! - `tx_c`: `[ TzeIn(tx_b, preimage_2) -> [any output types...] ]`
 
-use std::convert::TryFrom;
-use std::convert::TryInto;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
@@ -37,10 +35,10 @@ use zcash_primitives::{
 mod open {
     pub const MODE: u32 = 0;
 
-    #[derive(Debug, PartialEq)]
+    #[derive(Debug, PartialEq, Eq)]
     pub struct Precondition(pub [u8; 32]);
 
-    #[derive(Debug, PartialEq)]
+    #[derive(Debug, PartialEq, Eq)]
     pub struct Witness(pub [u8; 32]);
 }
 
@@ -48,15 +46,15 @@ mod open {
 mod close {
     pub const MODE: u32 = 1;
 
-    #[derive(Debug, PartialEq)]
+    #[derive(Debug, PartialEq, Eq)]
     pub struct Precondition(pub [u8; 32]);
 
-    #[derive(Debug, PartialEq)]
+    #[derive(Debug, PartialEq, Eq)]
     pub struct Witness(pub [u8; 32]);
 }
 
 /// The precondition type for the demo extension.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Precondition {
     Open(open::Precondition),
     Close(close::Precondition),
@@ -76,7 +74,7 @@ impl Precondition {
 
 /// Errors that may be produced during parsing and verification of demo preconditions and
 /// witnesses.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Error {
     /// Parse error indicating that the payload of the condition or the witness was
     /// not 32 bytes.
@@ -158,7 +156,7 @@ impl ToPayload for Precondition {
 }
 
 /// The witness type for the demo extension.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Witness {
     Open(open::Witness),
     Close(close::Witness),
@@ -479,7 +477,7 @@ impl<'a, B: ExtensionTxBuilder<'a>> DemoBuilder<B> {
 #[cfg(test)]
 mod tests {
     use blake2b_simd::Params;
-    use ff::{Field, PrimeField};
+    use ff::Field;
     use rand_core::OsRng;
 
     use zcash_proofs::prover::LocalTxProver;
@@ -494,9 +492,10 @@ mod tests {
         transaction::{
             builder::Builder,
             components::{
-                amount::{Amount, DEFAULT_FEE},
+                amount::Amount,
                 tze::{Authorized, Bundle, OutPoint, TzeIn, TzeOut},
             },
+            fees::fixed,
             Transaction, TransactionData, TxVersion,
         },
         zip32::ExtendedSpendingKey,
@@ -687,7 +686,7 @@ mod tests {
             precondition: tze::Precondition::from(0, &Precondition::open(hash_1)),
         };
 
-        let tx_a = TransactionData::from_parts(
+        let tx_a = TransactionData::from_parts_zfuture(
             TxVersion::ZFuture,
             BranchId::ZFuture,
             0,
@@ -718,7 +717,7 @@ mod tests {
             precondition: tze::Precondition::from(0, &Precondition::close(hash_2)),
         };
 
-        let tx_b = TransactionData::from_parts(
+        let tx_b = TransactionData::from_parts_zfuture(
             TxVersion::ZFuture,
             BranchId::ZFuture,
             0,
@@ -745,7 +744,7 @@ mod tests {
             witness: tze::Witness::from(0, &Witness::close(preimage_2)),
         };
 
-        let tx_c = TransactionData::from_parts(
+        let tx_c = TransactionData::from_parts_zfuture(
             TxVersion::ZFuture,
             BranchId::ZFuture,
             0,
@@ -810,14 +809,13 @@ mod tests {
         //
 
         let mut rng = OsRng;
+        let fee_rule = fixed::FeeRule::standard();
 
         // create some inputs to spend
         let extsk = ExtendedSpendingKey::master(&[]);
         let to = extsk.default_address().1;
-        let note1 = to
-            .create_note(110000, Rseed::BeforeZip212(jubjub::Fr::random(&mut rng)))
-            .unwrap();
-        let cm1 = Node::new(note1.cmu().to_repr());
+        let note1 = to.create_note(101000, Rseed::BeforeZip212(jubjub::Fr::random(&mut rng)));
+        let cm1 = Node::from_cmu(&note1.cmu());
         let mut tree = CommitmentTree::empty();
         // fake that the note appears in some previous
         // shielded output
@@ -837,7 +835,7 @@ mod tests {
             .unwrap();
         let (tx_a, _) = builder_a
             .txn_builder
-            .build(&prover)
+            .build_zfuture(&prover, &fee_rule)
             .map_err(|e| format!("build failure: {:?}", e))
             .unwrap();
         let tze_a = tx_a.tze_bundle().unwrap();
@@ -848,14 +846,14 @@ mod tests {
 
         let mut builder_b = demo_builder(tx_height + 1);
         let prevout_a = (OutPoint::new(tx_a.txid(), 0), tze_a.vout[0].clone());
-        let value_xfr = (value - DEFAULT_FEE).unwrap();
+        let value_xfr = (value - fee_rule.fixed_fee()).unwrap();
         builder_b
             .demo_transfer_to_close(prevout_a, value_xfr, preimage_1, h2)
             .map_err(|e| format!("transfer failure: {:?}", e))
             .unwrap();
         let (tx_b, _) = builder_b
             .txn_builder
-            .build(&prover)
+            .build_zfuture(&prover, &fee_rule)
             .map_err(|e| format!("build failure: {:?}", e))
             .unwrap();
         let tze_b = tx_b.tze_bundle().unwrap();
@@ -874,13 +872,13 @@ mod tests {
         builder_c
             .add_transparent_output(
                 &TransparentAddress::PublicKey([0; 20]),
-                (value_xfr - DEFAULT_FEE).unwrap(),
+                (value_xfr - fee_rule.fixed_fee()).unwrap(),
             )
             .unwrap();
 
         let (tx_c, _) = builder_c
             .txn_builder
-            .build(&prover)
+            .build_zfuture(&prover, &fee_rule)
             .map_err(|e| format!("build failure: {:?}", e))
             .unwrap();
         let tze_c = tx_c.tze_bundle().unwrap();

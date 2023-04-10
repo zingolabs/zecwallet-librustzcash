@@ -1,7 +1,6 @@
 use blake2b_simd::{Hash as Blake2bHash, Params as Blake2bParams};
 use byteorder::{LittleEndian, WriteBytesExt};
 use ff::PrimeField;
-use group::GroupEncoding;
 
 use crate::consensus::BranchId;
 
@@ -54,9 +53,7 @@ fn prevout_hash<TA: transparent::Authorization>(vin: &[TxIn<TA>]) -> Blake2bHash
 fn sequence_hash<TA: transparent::Authorization>(vin: &[TxIn<TA>]) -> Blake2bHash {
     let mut data = Vec::with_capacity(vin.len() * 4);
     for t_in in vin {
-        (&mut data)
-            .write_u32::<LittleEndian>(t_in.sequence)
-            .unwrap();
+        data.write_u32::<LittleEndian>(t_in.sequence).unwrap();
     }
     Blake2bParams::new()
         .hash_length(32)
@@ -107,16 +104,18 @@ fn joinsplits_hash(
         .hash(&data)
 }
 
-fn shielded_spends_hash<A: sapling::Authorization<Proof = GrothProofBytes>>(
+fn shielded_spends_hash<
+    A: sapling::Authorization<SpendProof = GrothProofBytes, OutputProof = GrothProofBytes>,
+>(
     shielded_spends: &[SpendDescription<A>],
 ) -> Blake2bHash {
     let mut data = Vec::with_capacity(shielded_spends.len() * 384);
     for s_spend in shielded_spends {
-        data.extend_from_slice(&s_spend.cv.to_bytes());
-        data.extend_from_slice(s_spend.anchor.to_repr().as_ref());
-        data.extend_from_slice(s_spend.nullifier.as_ref());
-        s_spend.rk.write(&mut data).unwrap();
-        data.extend_from_slice(&s_spend.zkproof);
+        data.extend_from_slice(&s_spend.cv().to_bytes());
+        data.extend_from_slice(s_spend.anchor().to_repr().as_ref());
+        data.extend_from_slice(s_spend.nullifier().as_ref());
+        s_spend.rk().write(&mut data).unwrap();
+        data.extend_from_slice(s_spend.zkproof());
     }
     Blake2bParams::new()
         .hash_length(32)
@@ -136,7 +135,7 @@ fn shielded_outputs_hash(shielded_outputs: &[OutputDescription<GrothProofBytes>]
 }
 
 pub fn v4_signature_hash<
-    SA: sapling::Authorization<Proof = GrothProofBytes>,
+    SA: sapling::Authorization<SpendProof = GrothProofBytes, OutputProof = GrothProofBytes>,
     A: Authorization<SaplingAuth = SA>,
 >(
     tx: &TransactionData<A>,
@@ -145,7 +144,7 @@ pub fn v4_signature_hash<
     let hash_type = signable_input.hash_type();
     if tx.version.has_overwinter() {
         let mut personal = [0; 16];
-        (&mut personal[..12]).copy_from_slice(ZCASH_SIGHASH_PERSONALIZATION_PREFIX);
+        personal[..12].copy_from_slice(ZCASH_SIGHASH_PERSONALIZATION_PREFIX);
         (&mut personal[12..])
             .write_u32::<LittleEndian>(tx.consensus_branch_id.into())
             .unwrap();
@@ -221,15 +220,15 @@ pub fn v4_signature_hash<
                 h,
                 !tx.sapling_bundle
                     .as_ref()
-                    .map_or(true, |b| b.shielded_spends.is_empty()),
-                shielded_spends_hash(&tx.sapling_bundle.as_ref().unwrap().shielded_spends)
+                    .map_or(true, |b| b.shielded_spends().is_empty()),
+                shielded_spends_hash(tx.sapling_bundle.as_ref().unwrap().shielded_spends())
             );
             update_hash!(
                 h,
                 !tx.sapling_bundle
                     .as_ref()
-                    .map_or(true, |b| b.shielded_outputs.is_empty()),
-                shielded_outputs_hash(&tx.sapling_bundle.as_ref().unwrap().shielded_outputs)
+                    .map_or(true, |b| b.shielded_outputs().is_empty()),
+                shielded_outputs_hash(tx.sapling_bundle.as_ref().unwrap().shielded_outputs())
             );
         }
         update_u32!(h, tx.lock_time, tmp);
@@ -252,8 +251,7 @@ pub fn v4_signature_hash<
                     bundle.vin[*index].prevout.write(&mut data).unwrap();
                     script_code.write(&mut data).unwrap();
                     data.extend_from_slice(&value.to_i64_le_bytes());
-                    (&mut data)
-                        .write_u32::<LittleEndian>(bundle.vin[*index].sequence)
+                    data.write_u32::<LittleEndian>(bundle.vin[*index].sequence)
                         .unwrap();
                     h.update(&data);
                 } else {

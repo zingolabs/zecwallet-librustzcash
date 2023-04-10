@@ -1,6 +1,7 @@
 //! Structs and methods for handling Zcash transactions.
 pub mod builder;
 pub mod components;
+pub mod fees;
 pub mod sighash;
 pub mod sighash_v4;
 pub mod sighash_v5;
@@ -13,6 +14,7 @@ mod tests;
 use blake2b_simd::Hash as Blake2bHash;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use ff::PrimeField;
+use memuse::DynamicUsage;
 use std::convert::TryFrom;
 use std::fmt;
 use std::fmt::Debug;
@@ -27,13 +29,14 @@ use crate::{
 
 use self::{
     components::{
-        amount::Amount,
+        amount::{Amount, BalanceError},
         orchard as orchard_serialization,
         sapling::{
             self, OutputDescription, OutputDescriptionV5, SpendDescription, SpendDescriptionV5,
         },
         sprout::{self, JsDescription},
         transparent::{self, TxIn, TxOut},
+        OutPoint,
     },
     txid::{to_txid, BlockTxCommitmentDigester, TxIdDigester},
     util::sha256d::{HashReader, HashWriter},
@@ -63,6 +66,8 @@ const ZFUTURE_TX_VERSION: u32 = 0x0000FFFF;
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct TxId([u8; 32]);
+
+memuse::impl_no_dynamic_usage!(TxId);
 
 impl fmt::Debug for TxId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -317,7 +322,6 @@ impl<A: Authorization> TransactionData<A> {
         sprout_bundle: Option<sprout::Bundle>,
         sapling_bundle: Option<sapling::Bundle<A::SaplingAuth>>,
         orchard_bundle: Option<orchard::Bundle<A::OrchardAuth, Amount>>,
-        #[cfg(feature = "zfuture")] tze_bundle: Option<tze::Bundle<A::TzeAuth>>,
     ) -> Self {
         TransactionData {
             version,
@@ -329,6 +333,32 @@ impl<A: Authorization> TransactionData<A> {
             sapling_bundle,
             orchard_bundle,
             #[cfg(feature = "zfuture")]
+            tze_bundle: None,
+        }
+    }
+
+    #[cfg(feature = "zfuture")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_parts_zfuture(
+        version: TxVersion,
+        consensus_branch_id: BranchId,
+        lock_time: u32,
+        expiry_height: BlockHeight,
+        transparent_bundle: Option<transparent::Bundle<A::TransparentAuth>>,
+        sprout_bundle: Option<sprout::Bundle>,
+        sapling_bundle: Option<sapling::Bundle<A::SaplingAuth>>,
+        orchard_bundle: Option<orchard::Bundle<A::OrchardAuth, Amount>>,
+        tze_bundle: Option<tze::Bundle<A::TzeAuth>>,
+    ) -> Self {
+        TransactionData {
+            version,
+            consensus_branch_id,
+            lock_time,
+            expiry_height,
+            transparent_bundle,
+            sprout_bundle,
+            sapling_bundle,
+            orchard_bundle,
             tze_bundle,
         }
     }
@@ -368,6 +398,36 @@ impl<A: Authorization> TransactionData<A> {
     #[cfg(feature = "zfuture")]
     pub fn tze_bundle(&self) -> Option<&tze::Bundle<A::TzeAuth>> {
         self.tze_bundle.as_ref()
+    }
+
+    /// Returns the total fees paid by the transaction, given a function that can be used to
+    /// retrieve the value of previous transactions' transparent outputs that are being spent in
+    /// this transaction.
+    pub fn fee_paid<E, F>(&self, get_prevout: F) -> Result<Amount, E>
+    where
+        E: From<BalanceError>,
+        F: FnMut(&OutPoint) -> Result<Amount, E>,
+    {
+        let value_balances = [
+            self.transparent_bundle
+                .as_ref()
+                .map_or_else(|| Ok(Amount::zero()), |b| b.value_balance(get_prevout))?,
+            self.sprout_bundle.as_ref().map_or_else(
+                || Ok(Amount::zero()),
+                |b| b.value_balance().ok_or(BalanceError::Overflow),
+            )?,
+            self.sapling_bundle
+                .as_ref()
+                .map_or_else(Amount::zero, |b| *b.value_balance()),
+            self.orchard_bundle
+                .as_ref()
+                .map_or_else(Amount::zero, |b| *b.value_balance()),
+        ];
+
+        value_balances
+            .iter()
+            .sum::<Option<_>>()
+            .ok_or_else(|| BalanceError::Overflow.into())
     }
 
     pub fn digest<D: TransactionDigest<A>>(&self, digester: D) -> D::Digest {
@@ -453,7 +513,7 @@ impl<A: Authorization> TransactionData<A> {
     pub fn sapling_value_balance(&self) -> Amount {
         self.sapling_bundle
             .as_ref()
-            .map_or(Amount::zero(), |b| b.value_balance)
+            .map_or(Amount::zero(), |b| *b.value_balance())
     }
 }
 
@@ -588,11 +648,13 @@ impl Transaction {
                 expiry_height,
                 transparent_bundle,
                 sprout_bundle,
-                sapling_bundle: binding_sig.map(|binding_sig| sapling::Bundle {
-                    value_balance,
-                    shielded_spends,
-                    shielded_outputs,
-                    authorization: sapling::Authorized { binding_sig },
+                sapling_bundle: binding_sig.map(|binding_sig| {
+                    sapling::Bundle::from_parts(
+                        shielded_spends,
+                        shielded_outputs,
+                        value_balance,
+                        sapling::Authorized { binding_sig },
+                    )
                 }),
                 orchard_bundle: None,
                 #[cfg(feature = "zfuture")]
@@ -719,11 +781,13 @@ impl Transaction {
             .map(|(od_5, zkproof)| od_5.into_output_description(zkproof))
             .collect();
 
-        Ok(binding_sig.map(|binding_sig| sapling::Bundle {
-            value_balance,
-            shielded_spends,
-            shielded_outputs,
-            authorization: sapling::Authorized { binding_sig },
+        Ok(binding_sig.map(|binding_sig| {
+            sapling::Bundle::from_parts(
+                shielded_spends,
+                shielded_outputs,
+                value_balance,
+                sapling::Authorized { binding_sig },
+            )
         }))
     }
 
@@ -767,21 +831,21 @@ impl Transaction {
                 &self
                     .sapling_bundle
                     .as_ref()
-                    .map_or(Amount::zero(), |b| b.value_balance)
+                    .map_or(Amount::zero(), |b| *b.value_balance())
                     .to_i64_le_bytes(),
             )?;
             Vector::write(
                 &mut writer,
                 self.sapling_bundle
                     .as_ref()
-                    .map_or(&[], |b| &b.shielded_spends),
+                    .map_or(&[], |b| b.shielded_spends()),
                 |w, e| e.write_v4(w),
             )?;
             Vector::write(
                 &mut writer,
                 self.sapling_bundle
                     .as_ref()
-                    .map_or(&[], |b| &b.shielded_outputs),
+                    .map_or(&[], |b| b.shielded_outputs()),
                 |w, e| e.write_v4(w),
             )?;
         } else if self.sapling_bundle.is_some() {
@@ -803,7 +867,7 @@ impl Transaction {
 
         if self.version.has_sapling() {
             if let Some(bundle) = self.sapling_bundle.as_ref() {
-                bundle.authorization.binding_sig.write(&mut writer)?;
+                bundle.authorization().binding_sig.write(&mut writer)?;
             }
         }
 
@@ -855,40 +919,40 @@ impl Transaction {
 
     pub fn write_v5_sapling<W: Write>(&self, mut writer: W) -> io::Result<()> {
         if let Some(bundle) = &self.sapling_bundle {
-            Vector::write(&mut writer, &bundle.shielded_spends, |w, e| {
+            Vector::write(&mut writer, bundle.shielded_spends(), |w, e| {
                 e.write_v5_without_witness_data(w)
             })?;
 
-            Vector::write(&mut writer, &bundle.shielded_outputs, |w, e| {
+            Vector::write(&mut writer, bundle.shielded_outputs(), |w, e| {
                 e.write_v5_without_proof(w)
             })?;
 
-            if !(bundle.shielded_spends.is_empty() && bundle.shielded_outputs.is_empty()) {
-                writer.write_all(&bundle.value_balance.to_i64_le_bytes())?;
+            if !(bundle.shielded_spends().is_empty() && bundle.shielded_outputs().is_empty()) {
+                writer.write_all(&bundle.value_balance().to_i64_le_bytes())?;
             }
-            if !bundle.shielded_spends.is_empty() {
-                writer.write_all(bundle.shielded_spends[0].anchor.to_repr().as_ref())?;
+            if !bundle.shielded_spends().is_empty() {
+                writer.write_all(bundle.shielded_spends()[0].anchor().to_repr().as_ref())?;
             }
 
             Array::write(
                 &mut writer,
-                bundle.shielded_spends.iter().map(|s| s.zkproof),
+                bundle.shielded_spends().iter().map(|s| &s.zkproof()[..]),
                 |w, e| w.write_all(e),
             )?;
             Array::write(
                 &mut writer,
-                bundle.shielded_spends.iter().map(|s| s.spend_auth_sig),
+                bundle.shielded_spends().iter().map(|s| s.spend_auth_sig()),
                 |w, e| e.write(w),
             )?;
 
             Array::write(
                 &mut writer,
-                bundle.shielded_outputs.iter().map(|s| s.zkproof),
+                bundle.shielded_outputs().iter().map(|s| &s.zkproof()[..]),
                 |w, e| w.write_all(e),
             )?;
 
-            if !(bundle.shielded_spends.is_empty() && bundle.shielded_outputs.is_empty()) {
-                bundle.authorization.binding_sig.write(&mut writer)?;
+            if !(bundle.shielded_spends().is_empty() && bundle.shielded_outputs().is_empty()) {
+                bundle.authorization().binding_sig.write(&mut writer)?;
             }
         } else {
             CompactSize::write(&mut writer, 0)?;

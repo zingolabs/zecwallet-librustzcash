@@ -1,6 +1,5 @@
 use crate::legacy::Script;
 use blake2b_simd::Hash as Blake2bHash;
-use std::convert::TryInto;
 
 use super::{
     components::{
@@ -79,7 +78,7 @@ pub trait TransparentAuthorizingContext: transparent::Authorization {
 pub fn signature_hash<
     'a,
     TA: TransparentAuthorizingContext,
-    SA: sapling::Authorization<Proof = GrothProofBytes>,
+    SA: sapling::Authorization<SpendProof = GrothProofBytes, OutputProof = GrothProofBytes>,
     A: Authorization<SaplingAuth = SA, TransparentAuth = TA>,
 >(
     tx: &TransactionData<A>,
