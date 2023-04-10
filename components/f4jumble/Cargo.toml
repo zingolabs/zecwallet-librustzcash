@@ -12,8 +12,12 @@ repository = "https://github.com/zcash/librustzcash"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 edition = "2018"
+rust-version = "1.51"
 categories = ["encoding"]
 keywords = ["feistel"]
+
+[package.metadata.cargo-udeps.ignore]
+development = ["hex"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -3,18 +3,22 @@
 
 use zcash_note_encryption::EphemeralKeyBytes;
 use zcash_primitives::{
-    keys::OutgoingViewingKey,
-    merkle_tree::IncrementalWitness,
-    sapling::{Diversifier, Node, Note, Nullifier, PaymentAddress, Rseed},
-    transaction::{components::Amount, TxId},
-    zip32::AccountId,
-};
-
-#[cfg(feature = "transparent-inputs")]
-use zcash_primitives::{
     consensus::BlockHeight,
+    keys::OutgoingViewingKey,
     legacy::TransparentAddress,
-    transaction::components::{OutPoint, TxOut},
+    merkle_tree::IncrementalWitness,
+    sapling::{
+        note::ExtractedNoteCommitment, Diversifier, Node, Note, Nullifier, PaymentAddress, Rseed,
+    },
+    transaction::{
+        components::{
+            sapling,
+            transparent::{self, OutPoint, TxOut},
+            Amount,
+        },
+        TxId,
+    },
+    zip32::AccountId,
 };
 
 /// A subset of a [`Transaction`] relevant to wallets and light clients.
@@ -29,17 +33,57 @@ pub struct WalletTx<N> {
     pub shielded_outputs: Vec<WalletShieldedOutput<N>>,
 }
 
-#[cfg(feature = "transparent-inputs")]
+#[derive(Debug, Clone)]
 pub struct WalletTransparentOutput {
-    pub outpoint: OutPoint,
-    pub txout: TxOut,
-    pub height: BlockHeight,
+    outpoint: OutPoint,
+    txout: TxOut,
+    height: BlockHeight,
+    recipient_address: TransparentAddress,
 }
 
-#[cfg(feature = "transparent-inputs")]
 impl WalletTransparentOutput {
-    pub fn address(&self) -> TransparentAddress {
-        self.txout.script_pubkey.address().unwrap()
+    pub fn from_parts(
+        outpoint: OutPoint,
+        txout: TxOut,
+        height: BlockHeight,
+    ) -> Option<WalletTransparentOutput> {
+        txout
+            .recipient_address()
+            .map(|recipient_address| WalletTransparentOutput {
+                outpoint,
+                txout,
+                height,
+                recipient_address,
+            })
+    }
+
+    pub fn outpoint(&self) -> &OutPoint {
+        &self.outpoint
+    }
+
+    pub fn txout(&self) -> &TxOut {
+        &self.txout
+    }
+
+    pub fn height(&self) -> BlockHeight {
+        self.height
+    }
+
+    pub fn recipient_address(&self) -> &TransparentAddress {
+        &self.recipient_address
+    }
+
+    pub fn value(&self) -> Amount {
+        self.txout.value
+    }
+}
+
+impl transparent::fees::InputView for WalletTransparentOutput {
+    fn outpoint(&self) -> &OutPoint {
+        &self.outpoint
+    }
+    fn coin(&self) -> &TxOut {
+        &self.txout
     }
 }
 
@@ -57,7 +101,7 @@ pub struct WalletShieldedSpend {
 /// [`OutputDescription`]: zcash_primitives::transaction::components::OutputDescription
 pub struct WalletShieldedOutput<N> {
     pub index: usize,
-    pub cmu: bls12_381::Scalar,
+    pub cmu: ExtractedNoteCommitment,
     pub ephemeral_key: EphemeralKeyBytes,
     pub account: AccountId,
     pub note: Note,
@@ -69,11 +113,22 @@ pub struct WalletShieldedOutput<N> {
 
 /// Information about a note that is tracked by the wallet that is available for spending,
 /// with sufficient information for use in note selection.
-pub struct SpendableNote {
+pub struct SpendableNote<NoteRef> {
+    pub note_id: NoteRef,
     pub diversifier: Diversifier,
     pub note_value: Amount,
     pub rseed: Rseed,
     pub witness: IncrementalWitness<Node>,
+}
+
+impl<NoteRef> sapling::fees::InputView<NoteRef> for SpendableNote<NoteRef> {
+    fn note_id(&self) -> &NoteRef {
+        &self.note_id
+    }
+
+    fn value(&self) -> Amount {
+        self.note_value
+    }
 }
 
 /// Describes a policy for which outgoing viewing key should be able to decrypt

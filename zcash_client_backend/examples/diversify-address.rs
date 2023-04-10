@@ -1,5 +1,3 @@
-use std::convert::TryInto;
-
 use gumdrop::Options;
 use zcash_client_backend::encoding::{decode_extended_full_viewing_key, encode_payment_address};
 use zcash_primitives::{
@@ -9,16 +7,12 @@ use zcash_primitives::{
 
 fn parse_viewing_key(s: &str) -> Result<(ExtendedFullViewingKey, bool), &'static str> {
     decode_extended_full_viewing_key(mainnet::HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY, s)
-        .ok()
-        .flatten()
         .map(|vk| (vk, true))
-        .or_else(|| {
+        .or_else(|_| {
             decode_extended_full_viewing_key(testnet::HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY, s)
-                .ok()
-                .flatten()
                 .map(|vk| (vk, false))
         })
-        .ok_or("Invalid Sapling viewing key")
+        .map_err(|_| "Invalid Sapling viewing key")
 }
 
 fn parse_diversifier_index(s: &str) -> Result<DiversifierIndex, &'static str> {

@@ -15,5 +15,19 @@ and this library adheres to Rust's notion of
 ### Removed
 - `zcash_address::FromAddress` (use `TryFromAddress` instead).
 
+## [0.2.0] - 2022-10-19
+### Added
+- `zcash_address::ConversionError`
+- `zcash_address::TryFromAddress`
+- `zcash_address::TryFromRawAddress`
+- `zcash_address::ZcashAddress::convert_if_network`
+- A `TryFrom<Typecode>` implementation for `usize`.
+
+### Changed
+- MSRV is now 1.52
+
+### Removed
+- `zcash_address::FromAddress` (use `TryFromAddress` instead).
+
 ## [0.1.0] - 2022-05-11
 Initial release.

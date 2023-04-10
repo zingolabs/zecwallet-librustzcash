@@ -7,7 +7,6 @@ use incrementalmerkletree::{
     Altitude,
 };
 use std::collections::VecDeque;
-use std::convert::TryFrom;
 use std::io::{self, Read, Write};
 use std::iter::repeat;
 use zcash_encoding::{Optional, Vector};
@@ -324,13 +323,13 @@ impl<Node: Hashable> CommitmentTree<Node> {
 ///
 /// let mut tree = CommitmentTree::<Node>::empty();
 ///
-/// tree.append(Node::new(bls12_381::Scalar::random(&mut rng).to_repr()));
-/// tree.append(Node::new(bls12_381::Scalar::random(&mut rng).to_repr()));
+/// tree.append(Node::from_scalar(bls12_381::Scalar::random(&mut rng)));
+/// tree.append(Node::from_scalar(bls12_381::Scalar::random(&mut rng)));
 /// let mut witness = IncrementalWitness::from_tree(&tree);
 /// assert_eq!(witness.position(), 1);
 /// assert_eq!(tree.root(), witness.root());
 ///
-/// let cmu = Node::new(bls12_381::Scalar::random(&mut rng).to_repr());
+/// let cmu = Node::from_scalar(bls12_381::Scalar::random(&mut rng));
 /// tree.append(cmu);
 /// witness.append(cmu);
 /// assert_eq!(tree.root(), witness.root());
@@ -521,7 +520,7 @@ impl<Node: Hashable> IncrementalWitness<Node> {
 }
 
 /// A path from a position in a particular commitment tree to the root of that tree.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MerklePath<Node: Hashable> {
     pub auth_path: Vec<(Node, bool)>,
     pub position: u64,
@@ -620,7 +619,6 @@ impl<Node: Hashable> MerklePath<Node> {
 mod tests {
     use incrementalmerkletree::bridgetree::Frontier;
     use proptest::prelude::*;
-    use std::convert::TryInto;
     use std::io::{self, Read, Write};
 
     use crate::sapling::{testing::arb_node, Node};

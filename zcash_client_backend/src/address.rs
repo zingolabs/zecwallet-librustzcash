@@ -6,10 +6,37 @@ use zcash_address::{
     unified::{self, Container, Encoding},
     ConversionError, Network, ToAddress, TryFromRawAddress, ZcashAddress,
 };
-use zcash_primitives::{consensus, legacy::TransparentAddress, sapling::PaymentAddress};
+use zcash_primitives::{
+    consensus,
+    legacy::TransparentAddress,
+    sapling::PaymentAddress,
+    zip32::{AccountId, DiversifierIndex},
+};
+
+pub struct AddressMetadata {
+    account: AccountId,
+    diversifier_index: DiversifierIndex,
+}
+
+impl AddressMetadata {
+    pub fn new(account: AccountId, diversifier_index: DiversifierIndex) -> Self {
+        Self {
+            account,
+            diversifier_index,
+        }
+    }
+
+    pub fn account(&self) -> AccountId {
+        self.account
+    }
+
+    pub fn diversifier_index(&self) -> &DiversifierIndex {
+        &self.diversifier_index
+    }
+}
 
 /// A Unified Address.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnifiedAddress {
     orchard: Option<orchard::Address>,
     sapling: Option<PaymentAddress>,
@@ -218,6 +245,70 @@ impl RecipientAddress {
                 TransparentAddress::Script(data) => ZcashAddress::from_transparent_p2sh(net, *data),
             },
             RecipientAddress::Unified(ua) => ua.to_address(net),
+        }
+        .to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use zcash_address::test_vectors;
+    use zcash_primitives::consensus::MAIN_NETWORK;
+
+    use super::{RecipientAddress, UnifiedAddress};
+    use crate::keys::sapling;
+
+    #[test]
+    fn ua_round_trip() {
+        let orchard = {
+            let sk = orchard::keys::SpendingKey::from_zip32_seed(&[0; 32], 0, 0).unwrap();
+            let fvk = orchard::keys::FullViewingKey::from(&sk);
+            Some(fvk.address_at(0u32, orchard::keys::Scope::External))
+        };
+
+        let sapling = {
+            let extsk = sapling::spending_key(&[0; 32], 0, 0.into());
+            let dfvk = extsk.to_diversifiable_full_viewing_key();
+            Some(dfvk.default_address().1)
+        };
+
+        let transparent = { None };
+
+        let ua = UnifiedAddress::from_receivers(orchard, sapling, transparent).unwrap();
+
+        let addr = RecipientAddress::Unified(ua);
+        let addr_str = addr.encode(&MAIN_NETWORK);
+        assert_eq!(
+            RecipientAddress::decode(&MAIN_NETWORK, &addr_str),
+            Some(addr)
+        );
+    }
+
+    #[test]
+    fn ua_parsing() {
+        for tv in test_vectors::UNIFIED {
+            match RecipientAddress::decode(&MAIN_NETWORK, tv.unified_addr) {
+                Some(RecipientAddress::Unified(ua)) => {
+                    assert_eq!(
+                        ua.transparent().is_some(),
+                        tv.p2pkh_bytes.is_some() || tv.p2sh_bytes.is_some()
+                    );
+                    assert_eq!(ua.sapling().is_some(), tv.sapling_raw_addr.is_some());
+                    assert_eq!(ua.orchard().is_some(), tv.orchard_raw_addr.is_some());
+                }
+                Some(_) => {
+                    panic!(
+                        "{} did not decode to a unified address value.",
+                        tv.unified_addr
+                    );
+                }
+                None => {
+                    panic!(
+                        "Failed to decode unified address from test vector: {}",
+                        tv.unified_addr
+                    );
+                }
+            }
         }
         .to_string()
     }

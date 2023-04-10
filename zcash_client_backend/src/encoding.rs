@@ -5,15 +5,16 @@
 //!
 //! [constants]: zcash_primitives::constants
 
+use crate::address::UnifiedAddress;
 use bech32::{self, Error, FromBase32, ToBase32, Variant};
 use bs58::{self, decode::Error as Bs58Error};
-use std::convert::TryInto;
 use std::fmt;
 use std::io::{self, Write};
+use zcash_address::unified::{self, Encoding};
 use zcash_primitives::{
     consensus,
     legacy::TransparentAddress,
-    sapling::PaymentAddress,
+    sapling,
     zip32::{ExtendedFullViewingKey, ExtendedSpendingKey},
 };
 
@@ -26,15 +27,55 @@ where
     bech32::encode(hrp, data.to_base32(), Variant::Bech32).expect("hrp is invalid")
 }
 
-fn bech32_decode<T, F>(hrp: &str, s: &str, read: F) -> Result<Option<T>, Error>
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Bech32DecodeError {
+    Bech32Error(Error),
+    IncorrectVariant(Variant),
+    ReadError,
+    HrpMismatch { expected: String, actual: String },
+}
+
+impl From<Error> for Bech32DecodeError {
+    fn from(err: Error) -> Self {
+        Bech32DecodeError::Bech32Error(err)
+    }
+}
+
+impl fmt::Display for Bech32DecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match &self {
+            Bech32DecodeError::Bech32Error(e) => write!(f, "{}", e),
+            Bech32DecodeError::IncorrectVariant(variant) => write!(
+                f,
+                "Incorrect bech32 encoding (wrong variant: {:?})",
+                variant
+            ),
+            Bech32DecodeError::ReadError => {
+                write!(f, "Failed to decode key from its binary representation.")
+            }
+            Bech32DecodeError::HrpMismatch { expected, actual } => write!(
+                f,
+                "Key was encoded for a different network: expected {}, got {}.",
+                expected, actual
+            ),
+        }
+    }
+}
+
+fn bech32_decode<T, F>(hrp: &str, s: &str, read: F) -> Result<T, Bech32DecodeError>
 where
     F: Fn(Vec<u8>) -> Option<T>,
 {
-    match bech32::decode(s)? {
-        (decoded_hrp, data, Variant::Bech32) if decoded_hrp == hrp => {
-            Vec::<u8>::from_base32(&data).map(read)
-        }
-        _ => Ok(None),
+    let (decoded_hrp, data, variant) = bech32::decode(s)?;
+    if variant != Variant::Bech32 {
+        Err(Bech32DecodeError::IncorrectVariant(variant))
+    } else if decoded_hrp != hrp {
+        Err(Bech32DecodeError::HrpMismatch {
+            expected: hrp.to_string(),
+            actual: decoded_hrp,
+        })
+    } else {
+        read(Vec::<u8>::from_base32(&data)?).ok_or(Bech32DecodeError::ReadError)
     }
 }
 
@@ -93,6 +134,41 @@ impl<P: consensus::Parameters> AddressCodec<P> for TransparentAddress {
     }
 }
 
+impl<P: consensus::Parameters> AddressCodec<P> for sapling::PaymentAddress {
+    type Error = Bech32DecodeError;
+
+    fn encode(&self, params: &P) -> String {
+        encode_payment_address(params.hrp_sapling_payment_address(), self)
+    }
+
+    fn decode(params: &P, address: &str) -> Result<Self, Bech32DecodeError> {
+        decode_payment_address(params.hrp_sapling_payment_address(), address)
+    }
+}
+
+impl<P: consensus::Parameters> AddressCodec<P> for UnifiedAddress {
+    type Error = String;
+
+    fn encode(&self, params: &P) -> String {
+        self.encode(params)
+    }
+
+    fn decode(params: &P, address: &str) -> Result<Self, String> {
+        unified::Address::decode(address)
+            .map_err(|e| format!("{}", e))
+            .and_then(|(network, addr)| {
+                if params.address_network() == Some(network) {
+                    UnifiedAddress::try_from(addr).map_err(|e| e.to_owned())
+                } else {
+                    Err(format!(
+                        "Address {} is for a different network: {:?}",
+                        address, network
+                    ))
+                }
+            })
+    }
+}
+
 /// Writes an [`ExtendedSpendingKey`] as a Bech32-encoded string.
 ///
 /// # Examples
@@ -121,7 +197,7 @@ pub fn encode_extended_spending_key(hrp: &str, extsk: &ExtendedSpendingKey) -> S
 pub fn decode_extended_spending_key(
     hrp: &str,
     s: &str,
-) -> Result<Option<ExtendedSpendingKey>, Error> {
+) -> Result<ExtendedSpendingKey, Bech32DecodeError> {
     bech32_decode(hrp, s, |data| ExtendedSpendingKey::read(&data[..]).ok())
 }
 
@@ -141,7 +217,7 @@ pub fn decode_extended_spending_key(
 /// use zcash_primitives::zip32::ExtendedFullViewingKey;
 ///
 /// let extsk = sapling::spending_key(&[0; 32][..], COIN_TYPE, AccountId::from(0));
-/// let extfvk = ExtendedFullViewingKey::from(&extsk);
+/// let extfvk = extsk.to_extended_full_viewing_key();
 /// let encoded = encode_extended_full_viewing_key(HRP_SAPLING_EXTENDED_FULL_VIEWING_KEY, &extfvk);
 /// ```
 /// [`ExtendedFullViewingKey`]: zcash_primitives::zip32::ExtendedFullViewingKey
@@ -155,7 +231,7 @@ pub fn encode_extended_full_viewing_key(hrp: &str, extfvk: &ExtendedFullViewingK
 pub fn decode_extended_full_viewing_key(
     hrp: &str,
     s: &str,
-) -> Result<Option<ExtendedFullViewingKey>, Error> {
+) -> Result<ExtendedFullViewingKey, Bech32DecodeError> {
     bech32_decode(hrp, s, |data| ExtendedFullViewingKey::read(&data[..]).ok())
 }
 
@@ -165,9 +241,6 @@ pub fn decode_extended_full_viewing_key(
 ///
 /// ```
 /// use group::Group;
-/// use jubjub::SubgroupPoint;
-/// use rand_core::SeedableRng;
-/// use rand_xorshift::XorShiftRng;
 /// use zcash_client_backend::{
 ///     encoding::encode_payment_address,
 /// };
@@ -176,15 +249,12 @@ pub fn decode_extended_full_viewing_key(
 ///     sapling::{Diversifier, PaymentAddress},
 /// };
 ///
-/// let rng = &mut XorShiftRng::from_seed([
-///     0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-///     0xbc, 0xe5,
-/// ]);
-///
-/// let pa = PaymentAddress::from_parts(
-///     Diversifier([0u8; 11]),
-///     SubgroupPoint::random(rng),
-/// )
+/// let pa = PaymentAddress::from_bytes(&[
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x8e, 0x11,
+///     0x9d, 0x72, 0x99, 0x2b, 0x56, 0x0d, 0x26, 0x50, 0xff, 0xe0, 0xbe, 0x7f, 0x35, 0x42,
+///     0xfd, 0x97, 0x00, 0x3c, 0xb7, 0xcc, 0x3a, 0xbf, 0xf8, 0x1a, 0x7f, 0x90, 0x37, 0xf3,
+///     0xea,
+/// ])
 /// .unwrap();
 ///
 /// assert_eq!(
@@ -193,16 +263,18 @@ pub fn decode_extended_full_viewing_key(
 /// );
 /// ```
 /// [`PaymentAddress`]: zcash_primitives::sapling::PaymentAddress
-pub fn encode_payment_address(hrp: &str, addr: &PaymentAddress) -> String {
+pub fn encode_payment_address(hrp: &str, addr: &sapling::PaymentAddress) -> String {
     bech32_encode(hrp, |w| w.write_all(&addr.to_bytes()))
 }
 
 /// Writes a [`PaymentAddress`] as a Bech32-encoded string
 /// using the human-readable prefix values defined in the specified
 /// network parameters.
+///
+/// [`PaymentAddress`]: zcash_primitives::sapling::PaymentAddress
 pub fn encode_payment_address_p<P: consensus::Parameters>(
     params: &P,
-    addr: &PaymentAddress,
+    addr: &sapling::PaymentAddress,
 ) -> String {
     encode_payment_address(params.hrp_sapling_payment_address(), addr)
 }
@@ -213,38 +285,35 @@ pub fn encode_payment_address_p<P: consensus::Parameters>(
 ///
 /// ```
 /// use group::Group;
-/// use jubjub::SubgroupPoint;
-/// use rand_core::SeedableRng;
-/// use rand_xorshift::XorShiftRng;
 /// use zcash_client_backend::{
 ///     encoding::decode_payment_address,
 /// };
 /// use zcash_primitives::{
-///     constants::testnet::HRP_SAPLING_PAYMENT_ADDRESS,
+///     consensus::{TEST_NETWORK, Parameters},
 ///     sapling::{Diversifier, PaymentAddress},
 /// };
 ///
-/// let rng = &mut XorShiftRng::from_seed([
-///     0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-///     0xbc, 0xe5,
-/// ]);
-///
-/// let pa = PaymentAddress::from_parts(
-///     Diversifier([0u8; 11]),
-///     SubgroupPoint::random(rng),
-/// )
+/// let pa = PaymentAddress::from_bytes(&[
+///     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x8e, 0x11,
+///     0x9d, 0x72, 0x99, 0x2b, 0x56, 0x0d, 0x26, 0x50, 0xff, 0xe0, 0xbe, 0x7f, 0x35, 0x42,
+///     0xfd, 0x97, 0x00, 0x3c, 0xb7, 0xcc, 0x3a, 0xbf, 0xf8, 0x1a, 0x7f, 0x90, 0x37, 0xf3,
+///     0xea,
+/// ])
 /// .unwrap();
 ///
 /// assert_eq!(
 ///     decode_payment_address(
-///         HRP_SAPLING_PAYMENT_ADDRESS,
+///         TEST_NETWORK.hrp_sapling_payment_address(),
 ///         "ztestsapling1qqqqqqqqqqqqqqqqqqcguyvaw2vjk4sdyeg0lc970u659lvhqq7t0np6hlup5lusxle75ss7jnk",
 ///     ),
-///     Ok(Some(pa)),
+///     Ok(pa),
 /// );
 /// ```
 /// [`PaymentAddress`]: zcash_primitives::sapling::PaymentAddress
-pub fn decode_payment_address(hrp: &str, s: &str) -> Result<Option<PaymentAddress>, Error> {
+pub fn decode_payment_address(
+    hrp: &str,
+    s: &str,
+) -> Result<sapling::PaymentAddress, Bech32DecodeError> {
     bech32_decode(hrp, s, |data| {
         if data.len() != 43 {
             return None;
@@ -252,7 +321,7 @@ pub fn decode_payment_address(hrp: &str, s: &str) -> Result<Option<PaymentAddres
 
         let mut bytes = [0; 43];
         bytes.copy_from_slice(&data);
-        PaymentAddress::from_bytes(&bytes)
+        sapling::PaymentAddress::from_bytes(&bytes)
     })
 }
 
@@ -265,14 +334,14 @@ pub fn decode_payment_address(hrp: &str, s: &str) -> Result<Option<PaymentAddres
 ///     encoding::encode_transparent_address,
 /// };
 /// use zcash_primitives::{
-///     constants::testnet::{B58_PUBKEY_ADDRESS_PREFIX, B58_SCRIPT_ADDRESS_PREFIX},
+///     consensus::{TEST_NETWORK, Parameters},
 ///     legacy::TransparentAddress,
 /// };
 ///
 /// assert_eq!(
 ///     encode_transparent_address(
-///         &B58_PUBKEY_ADDRESS_PREFIX,
-///         &B58_SCRIPT_ADDRESS_PREFIX,
+///         &TEST_NETWORK.b58_pubkey_address_prefix(),
+///         &TEST_NETWORK.b58_script_address_prefix(),
 ///         &TransparentAddress::PublicKey([0; 20]),
 ///     ),
 ///     "tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma",
@@ -280,8 +349,8 @@ pub fn decode_payment_address(hrp: &str, s: &str) -> Result<Option<PaymentAddres
 ///
 /// assert_eq!(
 ///     encode_transparent_address(
-///         &B58_PUBKEY_ADDRESS_PREFIX,
-///         &B58_SCRIPT_ADDRESS_PREFIX,
+///         &TEST_NETWORK.b58_pubkey_address_prefix(),
+///         &TEST_NETWORK.b58_script_address_prefix(),
 ///         &TransparentAddress::Script([0; 20]),
 ///     ),
 ///     "t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2",
@@ -330,7 +399,7 @@ pub fn encode_transparent_address_p<P: consensus::Parameters>(
 ///
 /// ```
 /// use zcash_primitives::{
-///     constants::testnet::{B58_PUBKEY_ADDRESS_PREFIX, B58_SCRIPT_ADDRESS_PREFIX},
+///     consensus::{TEST_NETWORK, Parameters},
 /// };
 /// use zcash_client_backend::{
 ///     encoding::decode_transparent_address,
@@ -339,8 +408,8 @@ pub fn encode_transparent_address_p<P: consensus::Parameters>(
 ///
 /// assert_eq!(
 ///     decode_transparent_address(
-///         &B58_PUBKEY_ADDRESS_PREFIX,
-///         &B58_SCRIPT_ADDRESS_PREFIX,
+///         &TEST_NETWORK.b58_pubkey_address_prefix(),
+///         &TEST_NETWORK.b58_script_address_prefix(),
 ///         "tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma",
 ///     ),
 ///     Ok(Some(TransparentAddress::PublicKey([0; 20]))),
@@ -348,8 +417,8 @@ pub fn encode_transparent_address_p<P: consensus::Parameters>(
 ///
 /// assert_eq!(
 ///     decode_transparent_address(
-///         &B58_PUBKEY_ADDRESS_PREFIX,
-///         &B58_SCRIPT_ADDRESS_PREFIX,
+///         &TEST_NETWORK.b58_pubkey_address_prefix(),
+///         &TEST_NETWORK.b58_script_address_prefix(),
 ///         "t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2",
 ///     ),
 ///     Ok(Some(TransparentAddress::Script([0; 20]))),
@@ -380,18 +449,12 @@ pub fn decode_transparent_address(
 
 #[cfg(test)]
 mod tests {
-    use group::Group;
-    use rand_core::SeedableRng;
-    use rand_xorshift::XorShiftRng;
-    use zcash_primitives::{
-        constants,
-        sapling::{Diversifier, PaymentAddress},
-        zip32::ExtendedSpendingKey,
-    };
+    use zcash_primitives::{constants, sapling::PaymentAddress, zip32::ExtendedSpendingKey};
 
     use super::{
         decode_extended_full_viewing_key, decode_extended_spending_key, decode_payment_address,
         encode_extended_full_viewing_key, encode_extended_spending_key, encode_payment_address,
+        Bech32DecodeError,
     };
 
     #[test]
@@ -414,7 +477,7 @@ mod tests {
                 encoded_main
             )
             .unwrap(),
-            Some(extsk.clone())
+            extsk
         );
 
         assert_eq!(
@@ -430,13 +493,14 @@ mod tests {
                 encoded_test
             )
             .unwrap(),
-            Some(extsk)
+            extsk
         );
     }
 
     #[test]
+    #[allow(deprecated)]
     fn extended_full_viewing_key() {
-        let extfvk = (&ExtendedSpendingKey::master(&[0; 32][..])).into();
+        let extfvk = ExtendedSpendingKey::master(&[0; 32][..]).to_extended_full_viewing_key();
 
         let encoded_main = "zxviews1qqqqqqqqqqqqqq8n3zjjmvhhr854uy3qhpda3ml34haf0x388z5r7h4st4kpsf6qy3zw4wc246aw9rlfyg5ndlwvne7mwdq0qe6vxl42pqmcf8pvmmd5slmjxduqa9evgej6wa3th2505xq4nggrxdm93rxk4rpdjt5nmq2vn44e2uhm7h0hsagfvkk4n7n6nfer6u57v9cac84t7nl2zth0xpyfeg0w2p2wv2yn6jn923aaz0vdaml07l60ahapk6efchyxwysrvjsxmansf";
         let encoded_test = "zxviewtestsapling1qqqqqqqqqqqqqq8n3zjjmvhhr854uy3qhpda3ml34haf0x388z5r7h4st4kpsf6qy3zw4wc246aw9rlfyg5ndlwvne7mwdq0qe6vxl42pqmcf8pvmmd5slmjxduqa9evgej6wa3th2505xq4nggrxdm93rxk4rpdjt5nmq2vn44e2uhm7h0hsagfvkk4n7n6nfer6u57v9cac84t7nl2zth0xpyfeg0w2p2wv2yn6jn923aaz0vdaml07l60ahapk6efchyxwysrvjs8evfkz";
@@ -454,7 +518,7 @@ mod tests {
                 encoded_main
             )
             .unwrap(),
-            Some(extfvk.clone())
+            extfvk
         );
 
         assert_eq!(
@@ -470,20 +534,19 @@ mod tests {
                 encoded_test
             )
             .unwrap(),
-            Some(extfvk)
+            extfvk
         );
     }
 
     #[test]
     fn payment_address() {
-        let rng = &mut XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
-
-        let addr =
-            PaymentAddress::from_parts(Diversifier([0u8; 11]), jubjub::SubgroupPoint::random(rng))
-                .unwrap();
+        let addr = PaymentAddress::from_bytes(&[
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x8e, 0x11,
+            0x9d, 0x72, 0x99, 0x2b, 0x56, 0x0d, 0x26, 0x50, 0xff, 0xe0, 0xbe, 0x7f, 0x35, 0x42,
+            0xfd, 0x97, 0x00, 0x3c, 0xb7, 0xcc, 0x3a, 0xbf, 0xf8, 0x1a, 0x7f, 0x90, 0x37, 0xf3,
+            0xea,
+        ])
+        .unwrap();
 
         let encoded_main =
             "zs1qqqqqqqqqqqqqqqqqqcguyvaw2vjk4sdyeg0lc970u659lvhqq7t0np6hlup5lusxle75c8v35z";
@@ -500,7 +563,7 @@ mod tests {
                 encoded_main
             )
             .unwrap(),
-            Some(addr.clone())
+            addr
         );
 
         assert_eq!(
@@ -513,31 +576,22 @@ mod tests {
                 encoded_test
             )
             .unwrap(),
-            Some(addr)
+            addr
         );
     }
 
     #[test]
     fn invalid_diversifier() {
-        let rng = &mut XorShiftRng::from_seed([
-            0x59, 0x62, 0xbe, 0x3d, 0x76, 0x3d, 0x31, 0x8d, 0x17, 0xdb, 0x37, 0x32, 0x54, 0x06,
-            0xbc, 0xe5,
-        ]);
-
-        let addr =
-            PaymentAddress::from_parts(Diversifier([1u8; 11]), jubjub::SubgroupPoint::random(rng))
-                .unwrap();
-
+        // Has a diversifier of `[1u8; 11]`.
         let encoded_main =
-            encode_payment_address(constants::mainnet::HRP_SAPLING_PAYMENT_ADDRESS, &addr);
+            "zs1qyqszqgpqyqszqgpqycguyvaw2vjk4sdyeg0lc970u659lvhqq7t0np6hlup5lusxle75ugum9p";
 
         assert_eq!(
             decode_payment_address(
                 constants::mainnet::HRP_SAPLING_PAYMENT_ADDRESS,
-                &encoded_main
-            )
-            .unwrap(),
-            None
+                encoded_main,
+            ),
+            Err(Bech32DecodeError::ReadError)
         );
     }
 }
