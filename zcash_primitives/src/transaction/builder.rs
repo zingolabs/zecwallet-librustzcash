@@ -60,6 +60,7 @@ pub enum Error {
     OrchardBuild(orchard::builder::Error),
     OrchardComponent(&'static str),
     NU5Inactive,
+    NU6Inactive,
     #[cfg(feature = "zfuture")]
     TzeBuild(tze::builder::Error),
 }
@@ -80,6 +81,10 @@ impl fmt::Display for Error {
                 f,
                 "Cannot create orchard transactions before NU5 activation"
             ),
+            Error::NU6Inactive => write!(
+                f,
+                "Cannot create orchard transactions before NU6 activation"
+            ),
             #[cfg(feature = "zfuture")]
             Error::TzeBuild(err) => err.fmt(f),
         }
@@ -99,6 +104,7 @@ impl PartialEq for Error {
             }
             (Error::OrchardComponent(e), Error::OrchardComponent(f)) => e == f,
             (Error::NU5Inactive, Error::NU5Inactive) => true,
+            (Error::NU6Inactive, Error::NU6Inactive) => true,
             #[cfg(feature = "zfuture")]
             (Error::TzeBuild(e), Error::TzeBuild(f)) => e == f,
             _ => false,
@@ -262,7 +268,7 @@ impl<'a, P: consensus::Parameters, R: RngCore + CryptoRng> Builder<'a, P, R, Orc
         self.orchard_builder
             .0
             .as_mut()
-            .ok_or(Error::NU5Inactive)?
+            .ok_or(Error::NU6Inactive)?
             .add_spend(orchard::keys::FullViewingKey::from(&sk), note, merkle_path)
             .map_err(Error::OrchardComponent)
     }
@@ -280,7 +286,7 @@ impl<'a, P: consensus::Parameters, R: RngCore + CryptoRng> Builder<'a, P, R, Orc
         self.orchard_builder
             .0
             .as_mut()
-            .ok_or(Error::NU5Inactive)?
+            .ok_or(Error::NU6Inactive)?
             .add_recipient(
                 ovk,
                 recipient,
